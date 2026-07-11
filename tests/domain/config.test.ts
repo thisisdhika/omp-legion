@@ -48,4 +48,26 @@ describe("mergeLegionConfig", () => {
 			embedding: DEFAULT_EMBEDDING_SETTINGS,
 		});
 	});
+
+	test("falls back to defaults when a caller supplies present-but-undefined fields", () => {
+		// This is the exact shape parseLegionPluginSettings (host-config.ts)
+		// builds when a plugin-overrides file omits `hotl`/`embedding` entirely:
+		// `{ ...{}, baseUrl: settings[key] ?? undefined, model: settings[key] ?? undefined }`
+		// — keys that are present with an `undefined` value, not absent. A plain
+		// object spread over that shape would silently overwrite the defaults
+		// with `undefined` and fail required-string validation.
+		const config = mergeLegionConfig({
+			hotl: {
+				confidenceFloor: undefined,
+				disagreementThreshold: undefined,
+				costCeiling: undefined,
+			},
+			embedding: { baseUrl: undefined, apiKey: undefined, model: undefined },
+		});
+
+		expect(config).toMatchObject({
+			hotl: DEFAULT_HOTL_THRESHOLDS,
+			embedding: DEFAULT_EMBEDDING_SETTINGS,
+		});
+	});
 });

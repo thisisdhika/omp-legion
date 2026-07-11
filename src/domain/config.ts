@@ -26,6 +26,23 @@ const roleModelInputSchema = z.object({
 });
 type RoleModelConfigInput = z.infer<typeof roleModelInputSchema>;
 
+/**
+ * Zod's `.default()` only fires when a key is absent, not when it's present
+ * with an explicit `undefined` value — an object spread of a partial input
+ * (e.g. `{ ...raw.embedding, baseUrl: settings[...] ?? raw.embedding.baseUrl }`)
+ * produces exactly that: real keys holding `undefined`. Stripping them before
+ * merging with defaults restores the "missing key falls back to default"
+ * behavior the config surface is documented to have.
+ */
+function withoutUndefined<T extends Record<string, unknown>>(
+	value: T | undefined,
+): Partial<T> {
+	if (!value) return {};
+	return Object.fromEntries(
+		Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
+	) as Partial<T>;
+}
+
 const hotlThresholdInputSchema = z.object({
 	confidenceFloor: z.number().min(0).max(1).optional(),
 	disagreementThreshold: z.number().min(0).max(1).optional(),
@@ -99,12 +116,12 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 		modelMap,
 		hotl: {
 			...DEFAULT_HOTL_THRESHOLDS,
-			...raw.hotl,
+			...withoutUndefined(raw.hotl),
 		},
 		defaultEnsembleSize,
 		embedding: {
 			...DEFAULT_EMBEDDING_SETTINGS,
-			...raw.embedding,
+			...withoutUndefined(raw.embedding),
 		},
 	});
 }
