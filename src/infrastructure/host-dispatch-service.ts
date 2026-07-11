@@ -1,5 +1,6 @@
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 
 import {
 	DispatchService,
@@ -17,6 +18,7 @@ import {
 	HOTL_EMPTY_EDIT_MESSAGE,
 	HOTL_NO_DECISION_PROVIDER_MESSAGE,
 } from "../domain/constants";
+import { resolveAgentName } from "../domain/dispatch";
 import { SynthesisService } from "../domain/synthesis";
 import { HostEmbeddingProvider } from "./embedding-provider";
 import { HostExpertExecutor, HostJobScheduler } from "./host-dispatcher";
@@ -36,6 +38,7 @@ function activeModelSelector(ctx: ExtensionContext): string | undefined {
 export function createHostDispatchService(
 	ctx: ExtensionContext,
 	config: LegionConfig,
+	agents: ReadonlyMap<string, AgentDefinition>,
 ): DispatchService {
 	const manager = AsyncJobManager.instance();
 	if (!manager) throw new Error("Legion requires the host async job manager.");
@@ -44,6 +47,7 @@ export function createHostDispatchService(
 		throw new Error("Legion requires an active model for aggregation.");
 
 	const sessionFile = ctx.sessionManager.getSessionFile();
+	const agentNames = new Set(agents.keys());
 	const options: DispatchServiceOptions = {
 		scheduler: new HostJobScheduler(manager),
 		executor: new HostExpertExecutor({
@@ -54,7 +58,9 @@ export function createHostDispatchService(
 			parentArtifactManager:
 				ctx.sessionManager.getArtifactManager() ?? undefined,
 			parentActiveModelPattern: activeModelSelector(ctx),
+			agents,
 		}),
+		resolveAgent: (role) => resolveAgentName(role, agentNames),
 		synthesizer: new SynthesisService({
 			embeddingProvider: new HostEmbeddingProvider({
 				...config.embedding,

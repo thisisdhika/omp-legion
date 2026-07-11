@@ -1,13 +1,7 @@
 import type { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
-import {
-	type AgentDefinition,
-	discoverAgents,
-	getAgent,
-} from "@oh-my-pi/pi-coding-agent/task";
-import {
-	type ExecutorOptions,
-	runSubprocess,
-} from "@oh-my-pi/pi-coding-agent/task/executor";
+import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 
 import type {
 	ExpertExecution,
@@ -24,19 +18,25 @@ export interface HostExecutorOptions {
 	readonly artifactsDir?: string;
 	readonly parentArtifactManager?: ExecutorOptions["parentArtifactManager"];
 	readonly parentActiveModelPattern?: string;
+	/**
+	 * Legion's own resolved agent roster (bundled personas + any project/user
+	 * override), loaded once at session_start via agent-loader.ts. Agent
+	 * resolution itself already happened upstream in buildDispatchPlan
+	 * (domain/dispatch.ts's resolveAgentName) — this is only the lookup for
+	 * the actual AgentDefinition runSubprocess needs.
+	 */
+	readonly agents: ReadonlyMap<string, AgentDefinition>;
 }
 
 export class HostExpertExecutor implements ExpertExecutor {
 	readonly #options: HostExecutorOptions;
-	readonly #agents: Promise<AgentDefinition[]>;
 
 	constructor(options: HostExecutorOptions) {
 		this.#options = options;
-		this.#agents = discoverAgents(options.cwd).then((result) => result.agents);
 	}
 
 	async run(execution: ExpertExecution): Promise<ExpertResult> {
-		const agent = getAgent(await this.#agents, execution.attempt.agent);
+		const agent = this.#options.agents.get(execution.attempt.agent);
 		if (!agent)
 			throw new Error(`Unknown host agent "${execution.attempt.agent}".`);
 

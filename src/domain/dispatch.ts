@@ -1,9 +1,11 @@
 import { z } from "zod";
 
 import {
+	DEFAULT_DECOMPOSITION_AGENT,
 	DEFAULT_DISPATCH_STRATEGY,
 	DEFAULT_ENSEMBLE_SIZE,
 	DISPATCH_STRATEGIES,
+	LEGION_AGENT_PREFIX,
 	MAX_ENSEMBLE_SIZE,
 	MIN_ENSEMBLE_SIZE,
 } from "./constants";
@@ -147,6 +149,8 @@ export interface OrchestrationRepository {
 
 export type ModelAvailability = (selector: string) => boolean;
 export type AttemptIdFactory = (attemptIndex: number, taskId: string) => string;
+/** Resolves a sub-task's role to the host agent name that should run it. */
+export type AgentResolver = (role: string) => string;
 
 function availableModels(
 	policy: RoleModelPolicy | undefined,
@@ -183,11 +187,30 @@ function modelsForAttempts(selection: {
 	});
 }
 
+/**
+ * Given the set of Legion agent names actually loaded (bundled + any
+ * project/user override), resolve a role to the LEGION_AGENT_PREFIX-prefixed
+ * persona for that role if one exists, else the safe host default. This is
+ * the only place a sub-task's `agent` is decided — never trusted verbatim
+ * from a caller or the LLM decomposer, both of which have no visibility into
+ * which agent names are actually resolvable on this host.
+ */
+export function resolveAgentName(
+	role: string,
+	availableAgentNames: ReadonlySet<string>,
+): string {
+	const candidate = `${LEGION_AGENT_PREFIX}${role.trim().toLowerCase()}`;
+	return availableAgentNames.has(candidate)
+		? candidate
+		: DEFAULT_DECOMPOSITION_AGENT;
+}
+
 export function buildDispatchPlan(
 	request: DispatchRequest,
 	defaultModel: string | undefined,
 	isAvailable: ModelAvailability,
 	makeAttemptId: AttemptIdFactory,
+	resolveAgent: AgentResolver,
 ): DispatchPlan {
 	const attempts: DispatchAttempt[] = [];
 	let attemptIndex = 0;
@@ -206,7 +229,7 @@ export function buildDispatchPlan(
 			attempts.push({
 				id: makeAttemptId(attemptIndex, task.id),
 				taskId: task.id,
-				agent: task.agent,
+				agent: resolveAgent(task.role),
 				role: task.role,
 				assignment: task.assignment,
 				description: task.description,

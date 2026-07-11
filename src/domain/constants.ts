@@ -8,6 +8,7 @@ export const DISPATCH_STRATEGIES = [
 export const DEFAULT_DECOMPOSITION_TASK_ID = "task";
 export const DEFAULT_DECOMPOSITION_AGENT = "task";
 export const DEFAULT_DECOMPOSITION_ROLE = "generalist";
+export const LEGION_AGENT_PREFIX = "legion-";
 export const LEGION_DISPATCH_JOB_LABEL = "legion-dispatch";
 export const LEGION_ORCHESTRATION_ENTRY_TYPE = "legion-orchestration";
 export const LEGION_PLUGIN_NAME = "omp-legion";

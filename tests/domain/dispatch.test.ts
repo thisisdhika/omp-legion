@@ -4,6 +4,7 @@ import {
 	buildDispatchPlan,
 	dispatchRequestSchema,
 	humanReadableJobId,
+	resolveAgentName,
 } from "../../src/domain/dispatch";
 
 describe("dispatch planning", () => {
@@ -32,6 +33,7 @@ describe("dispatch planning", () => {
 			undefined,
 			(model) => model === "frontier",
 			(index) => `attempt-${index}`,
+			(role) => role,
 		);
 
 		expect(plan.attempts.map((attempt) => attempt.model)).toEqual([
@@ -66,6 +68,7 @@ describe("dispatch planning", () => {
 			undefined,
 			() => true,
 			(index) => `attempt-${index}`,
+			(role) => role,
 		);
 
 		expect(plan.attempts.map((attempt) => attempt.model)).toEqual([
@@ -93,6 +96,7 @@ describe("dispatch planning", () => {
 			"active",
 			(model) => model === "active",
 			(index) => `attempt-${index}`,
+			(role) => role,
 		);
 
 		expect(plan.attempts).toHaveLength(3);
@@ -126,8 +130,29 @@ describe("dispatch planning", () => {
 				"active",
 				() => true,
 				(index) => `attempt-${index}`,
+				(role) => role,
 			),
 		).toThrow('Duplicate dispatch task id "same".');
+	});
+});
+
+describe("resolveAgentName", () => {
+	// Agent is never trusted from the decomposer or caller (both invented
+	// unresolvable host agent names in practice) — it is always looked up
+	// here, against the roster Legion actually loaded.
+	test("picks the matching legion-<role> persona when one is loaded", () => {
+		const available = new Set(["task", "legion-coder", "legion-reviewer"]);
+		expect(resolveAgentName("coder", available)).toBe("legion-coder");
+	});
+
+	test("is case-insensitive and trims the role", () => {
+		const available = new Set(["legion-reviewer"]);
+		expect(resolveAgentName(" Reviewer ", available)).toBe("legion-reviewer");
+	});
+
+	test("falls back to the safe host default for an unmatched role", () => {
+		const available = new Set(["task", "legion-coder"]);
+		expect(resolveAgentName("security-auditor", available)).toBe("task");
 	});
 });
 

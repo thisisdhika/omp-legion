@@ -129,6 +129,7 @@ describe("DispatchService", () => {
 			repository: new RecordingRepository(),
 			defaultModel: "frontier",
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 		});
 
 		const accepted = service.dispatch({
@@ -170,6 +171,7 @@ describe("DispatchService", () => {
 			repository: new RecordingRepository(),
 			defaultModel: "frontier",
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 		});
 
 		const accepted = service.dispatch({ task: "Review the change" });
@@ -195,6 +197,7 @@ describe("DispatchService", () => {
 			repository: new RecordingRepository(),
 			defaultModel: "frontier",
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 		});
 
 		service.dispatch({ task: "Review the change" });
@@ -202,7 +205,9 @@ describe("DispatchService", () => {
 		if (!job) throw new Error("Expected a scheduled job.");
 		await job(context());
 
-		expect(executor.executions[0]?.attempt.agent).toBe("task");
+		// Agent is now resolved from role (never trusted from decomposition
+		// output) — the fallback's role, "generalist", is what matters here.
+		expect(executor.executions[0]?.attempt.role).toBe("generalist");
 		expect(executor.executions[0]?.attempt.assignment).toBe(
 			"Review the change",
 		);
@@ -218,6 +223,7 @@ describe("DispatchService", () => {
 			config: mergeLegionConfig({ defaultEnsembleSize: 5 }),
 			defaultModel: "frontier",
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 		});
 
 		const accepted = service.dispatch({
@@ -245,6 +251,7 @@ describe("DispatchService", () => {
 			repository,
 			synthesizer,
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 		});
 
 		service.dispatch({
@@ -297,6 +304,7 @@ describe("DispatchService", () => {
 			repository: new RecordingRepository(),
 			defaultModel: "frontier",
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 		});
 
 		service.dispatch({
@@ -346,6 +354,7 @@ describe("DispatchService", () => {
 			repository,
 			defaultModel: "frontier",
 			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
 			governanceThresholds: {
 				confidenceFloor: 0.8,
 				disagreementThreshold: 0.4,

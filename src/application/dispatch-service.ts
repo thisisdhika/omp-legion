@@ -12,6 +12,7 @@ import {
 	fallbackDecomposition,
 } from "../domain/decomposition";
 import {
+	type AgentResolver,
 	type DispatchAttempt,
 	type DispatchRequest,
 	type ExpertResult,
@@ -83,6 +84,7 @@ export interface DispatchServiceOptions {
 	readonly config?: LegionConfig;
 	readonly defaultModel?: string;
 	readonly isModelAvailable: ModelAvailability;
+	readonly resolveAgent: AgentResolver;
 	readonly governanceThresholds?: GovernanceThresholds;
 	readonly decomposer?: TaskDecomposer;
 	readonly notifyEscalation?: EscalationNotifier;
@@ -232,6 +234,7 @@ export class DispatchService {
 			this.#options.defaultModel,
 			this.#options.isModelAvailable,
 			(index, taskId) => `${idPrefix}-${taskId}-${index}`,
+			this.#options.resolveAgent,
 		);
 	}
 
