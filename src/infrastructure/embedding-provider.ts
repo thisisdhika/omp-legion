@@ -1,5 +1,8 @@
 import type { Api, Model } from "@oh-my-pi/pi-ai";
-import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import {
+	type ModelRegistry,
+	isAuthenticated,
+} from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import {
 	available as mnemopiAvailable,
 	embed as mnemopiEmbed,
@@ -140,7 +143,7 @@ export class HostModelRegistryEmbeddingAdapter implements EmbeddingProvider {
 				"Content-Type": "application/json",
 			};
 			const apiKey = await this.#options.modelRegistry.getApiKey(model);
-			if (apiKey && !headers.Authorization)
+			if (isAuthenticated(apiKey) && !headers.Authorization)
 				headers.Authorization = `Bearer ${apiKey}`;
 			const response = await fetch(registryEmbeddingUrl(model.baseUrl), {
 				method: "POST",
