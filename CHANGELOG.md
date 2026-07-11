@@ -14,7 +14,7 @@ All notable changes to this project are documented here. Format follows
 - Host model-registry embedding tier, ahead of the Mnemopi/Ollama fallback chain.
 - Durable Legion audit persistence for the orchestration record, including human resolutions.
 - Host-native config surface: per-role `modelMap`, HOTL thresholds, default ensemble size, embedding provider settings — centralized in `src/domain/constants.ts`.
-- `config.example.yml` documenting the full config surface.
+- `config.example.json` documenting the full config surface (matches the host's real `.omp/plugin-overrides.json` JSON format — corrected from an initial, inaccurate YAML draft).
 - ADRs for the DDD/MVVM layering and the host-native dispatch decision.
 
 ### Known open items

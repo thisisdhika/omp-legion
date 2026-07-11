@@ -1,0 +1,30 @@
+{
+	"//": "Example .omp/plugin-overrides.json for omp-legion. This is the host's real plugin-settings mechanism (getPluginSettings, JSON only — not config.yml, which is the host's own fixed settings schema and can't be extended by third-party plugins). Copy the \"omp-legion\" object below into your project's .omp/plugin-overrides.json under \"settings\". Every field is optional — anything you omit falls back to the defaults in src/domain/constants.ts.",
+
+	"settings": {
+		"omp-legion": {
+			"modelMap": {
+				"coder": {
+					"models": ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-luna"],
+					"strategy": "self-consistency",
+					"ensembleSize": 3
+				},
+				"reviewer": {
+					"models": ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-luna"],
+					"strategy": "diverse",
+					"ensembleSize": 2
+				}
+			},
+			"hotl": {
+				"confidenceFloor": 0.6,
+				"disagreementThreshold": 0.4,
+				"costCeiling": 100000
+			},
+			"defaultEnsembleSize": 3,
+			"embedding": {
+				"baseUrl": "http://127.0.0.1:11434",
+				"model": "nomic-embed-text"
+			}
+		}
+	}
+}
