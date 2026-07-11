@@ -390,8 +390,13 @@ describe("DispatchService", () => {
 		expect(notifications).toBe(1);
 
 		resolveDecision({ action: "approve" });
-		await run;
+		const summary = await run;
 
 		expect(repository.record?.state).toBe("completed");
+		// The delivered outcome text is the only place a human sees what
+		// actually happened — it must say an escalation occurred and how a
+		// human resolved it, not just the merged answer and raw stats.
+		expect(summary).toContain("**Escalated**");
+		expect(summary).toContain("**approved** by human decision");
 	});
 });

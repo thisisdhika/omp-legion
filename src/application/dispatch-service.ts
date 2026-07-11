@@ -1,6 +1,7 @@
 import type { LegionConfig } from "../domain/config";
 import {
 	DEFAULT_ENSEMBLE_SIZE,
+	HOTL_DECISION_APPROVE,
 	HOTL_DECISION_EDIT,
 	HOTL_DECISION_REJECT,
 	HOTL_EMPTY_EDIT_MESSAGE,
@@ -185,6 +186,38 @@ function notifyWithoutBlocking(
 	}
 }
 
+function formatExpertLine(result: ExpertResult): string {
+	const ok = result.exitCode === 0 && !result.aborted;
+	const status = ok ? "✓" : "✗";
+	const duration = `${(result.durationMs / 1000).toFixed(1)}s`;
+	const note = ok ? "" : ` — ${result.error ?? "failed"}`;
+	return `- ${status} \`${result.model}\` (${duration}, ${result.tokens} tok)${note}`;
+}
+
+/**
+ * Governance/resolution are computed but were previously invisible in the
+ * delivered outcome text — a human could approve or reject an escalation and
+ * the final summary would never say which happened. This is the actual
+ * "what happened" a human reads, so it must say so explicitly.
+ */
+function formatGovernance(
+	governance: GovernanceDecision,
+	resolution: GovernanceResolution | undefined,
+): string {
+	if (!governance.shouldEscalate) return "";
+	const reasons = governance.reasons.join(", ");
+	if (!resolution)
+		return `**Escalated** (${reasons}) — awaiting human decision.`;
+	const verb =
+		resolution.action === HOTL_DECISION_APPROVE
+			? "approved"
+			: resolution.action === HOTL_DECISION_EDIT
+				? "edited"
+				: "rejected";
+	const note = resolution.note ? ` — "${resolution.note}"` : "";
+	return `**Escalated** (${reasons}) → **${verb}** by human decision${note}.`;
+}
+
 function summarizeResults(
 	jobId: string,
 	outcomes: readonly TaskDispatchOutcome[],
@@ -193,12 +226,25 @@ function summarizeResults(
 	const completed = results.filter(
 		(result) => result.exitCode === 0 && !result.aborted,
 	).length;
-	const header = `Legion dispatch ${jobId} completed ${completed}/${results.length} expert attempts.`;
-	const tasks = outcomes.map(
-		({ taskId, synthesis }) =>
-			`## ${taskId}\n${synthesis.answer}\n\nConfidence: ${synthesis.confidence.toFixed(3)} · Disagreement: ${synthesis.disagreement.toFixed(3)} · Clustering: ${synthesis.clusteringMethod}`,
-	);
-	return [header, ...tasks].join("\n\n");
+	const header = `## Legion Dispatch — ${jobId}\n\n**${completed}/${results.length} expert attempts completed**`;
+	const tasks = outcomes.map((outcome) => {
+		const {
+			taskId,
+			synthesis,
+			governance,
+			resolution,
+			results: taskResults,
+		} = outcome;
+		const sections = [
+			`### ${taskId}`,
+			`**Confidence:** ${synthesis.confidence.toFixed(3)} · **Disagreement:** ${synthesis.disagreement.toFixed(3)} · **Clustering:** ${synthesis.clusteringMethod}`,
+			formatGovernance(governance, resolution),
+			synthesis.answer,
+			taskResults.map(formatExpertLine).join("\n"),
+		].filter((section) => section.trim().length > 0);
+		return sections.join("\n\n");
+	});
+	return [header, ...tasks].join("\n\n---\n\n");
 }
 
 export class DispatchService {
