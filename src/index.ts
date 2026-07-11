@@ -16,7 +16,12 @@ export default function legionExtension(api: ExtensionAPI): void {
 			loadLegionConfig(ctx.cwd),
 			loadDispatchAgents(ctx.cwd),
 		]);
-		service = createHostDispatchService(ctx, config, agents);
+		// api.events is only reachable here, at registration time —
+		// ExtensionContext (ctx) does not expose it. Threading it into the
+		// executor is what makes Legion's spawns appear in the interactive
+		// "Subagents" HUD, which listens for TASK_SUBAGENT_LIFECYCLE/PROGRESS
+		// events that runSubprocess only emits when given an event bus.
+		service = createHostDispatchService(ctx, config, agents, api.events);
 	});
 
 	registerTaskToolGuard(api);

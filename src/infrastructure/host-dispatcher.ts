@@ -26,6 +26,17 @@ export interface HostExecutorOptions {
 	 * the actual AgentDefinition runSubprocess needs.
 	 */
 	readonly agents: ReadonlyMap<string, AgentDefinition>;
+	/**
+	 * The session's shared event bus (`ExtensionAPI.events`, only available at
+	 * registration time in index.ts — ExtensionContext does not expose it).
+	 * runSubprocess only publishes TASK_SUBAGENT_LIFECYCLE/PROGRESS events
+	 * when given one; without it, the host's SessionObserverRegistry never
+	 * learns about a spawn, so it never appears in the interactive "Subagents"
+	 * HUD — even though the separate, unconditional AgentRegistry
+	 * registration inside runSubprocess still happens either way (which is
+	 * why IRC and the numeric subagent counter worked before this was wired).
+	 */
+	readonly eventBus?: ExecutorOptions["eventBus"];
 }
 
 export class HostExpertExecutor implements ExpertExecutor {
@@ -61,6 +72,7 @@ export class HostExpertExecutor implements ExpertExecutor {
 			artifactsDir: this.#options.artifactsDir,
 			parentArtifactManager: this.#options.parentArtifactManager,
 			modelRegistry: this.#options.modelRegistry,
+			eventBus: this.#options.eventBus,
 			signal: execution.signal,
 		});
 

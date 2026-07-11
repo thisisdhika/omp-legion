@@ -1,5 +1,6 @@
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 
 import {
@@ -39,6 +40,7 @@ export function createHostDispatchService(
 	ctx: ExtensionContext,
 	config: LegionConfig,
 	agents: ReadonlyMap<string, AgentDefinition>,
+	eventBus?: ExecutorOptions["eventBus"],
 ): DispatchService {
 	const manager = AsyncJobManager.instance();
 	if (!manager) throw new Error("Legion requires the host async job manager.");
@@ -59,6 +61,7 @@ export function createHostDispatchService(
 				ctx.sessionManager.getArtifactManager() ?? undefined,
 			parentActiveModelPattern: activeModelSelector(ctx),
 			agents,
+			eventBus,
 		}),
 		resolveAgent: (role) => resolveAgentName(role, agentNames),
 		synthesizer: new SynthesisService({
