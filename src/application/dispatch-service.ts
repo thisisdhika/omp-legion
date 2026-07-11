@@ -19,7 +19,7 @@ import {
 	type OrchestrationRepository,
 	buildDispatchPlan,
 	dispatchRequestSchema,
-	slugifyTaskId,
+	humanReadableJobId,
 } from "../domain/dispatch";
 import {
 	type GovernanceDecision,
@@ -215,7 +215,7 @@ export class DispatchService {
 		const jobId = this.#options.scheduler.schedule(
 			LEGION_DISPATCH_JOB_LABEL,
 			(context) => this.#run(context, request, parentToolCallId),
-			slugifyTaskId(request.task),
+			humanReadableJobId(request.task),
 		);
 
 		return {

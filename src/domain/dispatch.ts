@@ -33,24 +33,26 @@ export const dispatchTaskSchema = z.object({
 	description: z.string().trim().min(1).optional(),
 });
 
-const SLUG_MAX_LENGTH = 40;
-const SLUG_MAX_WORDS = 6;
+const JOB_ID_MAX_LENGTH = 48;
+const JOB_ID_MAX_WORDS = 6;
+const FALLBACK_JOB_ID = "LegionDispatch";
+
+function capitalize(word: string): string {
+	return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+}
 
 /**
- * A short, human-readable job-id slug derived from the task text, so a live
- * escalation/IRC transcript reads "legion-add-formatdate-export" instead of
+ * A short, human-readable PascalCase job id derived from the task text, so a
+ * live escalation/IRC transcript reads "LegionAddACommentAtTheTop" instead of
  * the host's bare auto-incrementing "bg_1" — the id is otherwise meaningless
- * to a human watching the session. Falls back to "legion-dispatch" for task
+ * to a human watching the session. Falls back to "LegionDispatch" for task
  * text with no usable word characters (e.g. pure symbols/non-Latin script).
  */
-export function slugifyTaskId(task: string): string {
-	const words = task
-		.toLowerCase()
-		.match(/[a-z0-9]+/g)
-		?.slice(0, SLUG_MAX_WORDS);
-	if (!words || words.length === 0) return "legion-dispatch";
-	const slug = words.join("-").slice(0, SLUG_MAX_LENGTH).replace(/-+$/, "");
-	return slug ? `legion-${slug}` : "legion-dispatch";
+export function humanReadableJobId(task: string): string {
+	const words = task.match(/[a-zA-Z0-9]+/g)?.slice(0, JOB_ID_MAX_WORDS);
+	if (!words || words.length === 0) return FALLBACK_JOB_ID;
+	const pascal = words.map(capitalize).join("").slice(0, JOB_ID_MAX_LENGTH);
+	return pascal ? `Legion${pascal}` : FALLBACK_JOB_ID;
 }
 
 export const dispatchRequestSchema = z.object({

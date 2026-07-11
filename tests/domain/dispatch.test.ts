@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildDispatchPlan,
 	dispatchRequestSchema,
-	slugifyTaskId,
+	humanReadableJobId,
 } from "../../src/domain/dispatch";
 
 describe("dispatch planning", () => {
@@ -131,17 +131,17 @@ describe("dispatch planning", () => {
 	});
 });
 
-describe("slugifyTaskId", () => {
+describe("humanReadableJobId", () => {
 	// The host auto-assigns a bare "bg_1"-style id when none is supplied,
 	// which is meaningless to a human watching a live escalation/IRC
 	// transcript — this gives every dispatch a human-readable job id instead.
-	test("derives a short slug from the task text", () => {
-		expect(slugifyTaskId("Add an exported formatDate helper")).toBe(
-			"legion-add-an-exported-formatdate-helper",
-		);
+	test("derives a PascalCase id from the task text", () => {
+		expect(
+			humanReadableJobId("Add a comment at the top of sample-bug.js"),
+		).toBe("LegionAddACommentAtTheTop");
 	});
 
-	test("falls back to a generic label for unslugifiable text", () => {
-		expect(slugifyTaskId("!!! 一二三 !!!")).toBe("legion-dispatch");
+	test("falls back to a generic label for unlabelable text", () => {
+		expect(humanReadableJobId("!!! 一二三 !!!")).toBe("LegionDispatch");
 	});
 });
