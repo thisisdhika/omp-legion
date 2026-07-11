@@ -23,19 +23,8 @@ function truncate(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-export function renderDispatchCall(
-	args: DispatchRequest,
-	theme: Theme,
-): Container {
-	const card = new Container();
-	card.addChild(
-		new Text(
-			header(theme, theme.icon?.extensionTool || "⌘", "Legion Dispatch"),
-			0,
-			0,
-		),
-	);
-
+function requestRows(args: DispatchRequest | undefined): string[] {
+	if (!args) return [];
 	const rows = [`task: "${truncate(args.task, TASK_PREVIEW_LENGTH)}"`];
 	if (args.tasks?.length) {
 		rows.push(`tasks: ${args.tasks.length} explicit`);
@@ -46,14 +35,21 @@ export function renderDispatchCall(
 	const modelMapKeys = Object.keys(args.modelMap ?? {});
 	if (modelMapKeys.length > 0)
 		rows.push(`modelMap: ${modelMapKeys.join(", ")}`);
-
-	card.addChild(new Text(treeLines(rows), 0, 0));
-	return card;
+	return rows;
 }
 
+/**
+ * A single combined card covering both the request and the immediate accept
+ * response. renderCall + renderResult on the same tool render as two
+ * separately-headed blocks stacked on top of each other, not one merged
+ * card — the same platform quirk the predecessor project hit and fixed by
+ * dropping renderCall entirely (see its D-2.6 note). renderResult's args
+ * parameter carries everything renderCall would have shown.
+ */
 export function renderDispatchResult(
 	result: AgentToolResult<LegionDispatchDetails>,
 	theme: Theme,
+	args?: DispatchRequest,
 ): Container {
 	const card = new Container();
 	const icon = result.isError
@@ -66,11 +62,16 @@ export function renderDispatchResult(
 		const first = result.content?.[0];
 		const message =
 			first && first.type === "text" ? first.text : "Dispatch failed.";
-		card.addChild(new Text(theme.fg?.("error", message) ?? message, 0, 0));
+		const rows = [
+			...requestRows(args),
+			theme.fg?.("error", message) ?? message,
+		];
+		card.addChild(new Text(treeLines(rows), 0, 0));
 		return card;
 	}
 
 	const rows = [
+		...requestRows(args),
 		`job: ${details.jobId}`,
 		`attempts: ${details.attemptCount}`,
 		`models: ${[...new Set(details.attemptModels)].join(", ")}`,

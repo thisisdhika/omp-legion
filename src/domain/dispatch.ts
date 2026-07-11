@@ -29,7 +29,13 @@ export const roleModelPolicySchema = z.object({
 
 export const dispatchTaskSchema = z.object({
 	id: z.string().trim().min(1),
-	agent: z.string().trim().min(1),
+	// Never read: the actual dispatched agent is always resolved from `role`
+	// (see resolveAgentName below), never trusted from the caller or the LLM
+	// decomposer. Kept optional and unused rather than required, so a caller
+	// that omits it (as models routinely do, having no reason to know it's
+	// vestigial) doesn't hit a schema validation error over a field with no
+	// effect on dispatch.
+	agent: z.string().trim().min(1).optional(),
 	role: z.string().trim().min(1),
 	assignment: z.string().trim().min(1),
 	description: z.string().trim().min(1).optional(),
