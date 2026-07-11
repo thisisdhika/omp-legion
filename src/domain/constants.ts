@@ -27,6 +27,7 @@ export const DEFAULT_MODEL_MAP = {} as const;
 
 export const DEFAULT_ENSEMBLE_SIZE = 3;
 export const MIN_ENSEMBLE_SIZE = 1;
+export const DEFAULT_BENCHMARK_TIMEOUT_MS = 10 * 60_000;
 export const MAX_ENSEMBLE_SIZE = 16;
 
 export const AGGREGATOR_DISABLE_REASONING = true;
