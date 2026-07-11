@@ -93,13 +93,18 @@ export class HostJobScheduler implements JobScheduler {
 	schedule(
 		label: string,
 		run: (context: JobRunContext) => Promise<string>,
+		id?: string,
 	): string {
-		return this.#manager.register("task", label, (context) =>
-			run({
-				jobId: context.jobId,
-				signal: context.signal,
-				reportProgress: context.reportProgress,
-			}),
+		return this.#manager.register(
+			"task",
+			label,
+			(context) =>
+				run({
+					jobId: context.jobId,
+					signal: context.signal,
+					reportProgress: context.reportProgress,
+				}),
+			{ id },
 		);
 	}
 }

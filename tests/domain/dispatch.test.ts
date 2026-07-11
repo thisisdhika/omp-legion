@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	buildDispatchPlan,
 	dispatchRequestSchema,
+	slugifyTaskId,
 } from "../../src/domain/dispatch";
 
 describe("dispatch planning", () => {
@@ -127,5 +128,20 @@ describe("dispatch planning", () => {
 				(index) => `attempt-${index}`,
 			),
 		).toThrow('Duplicate dispatch task id "same".');
+	});
+});
+
+describe("slugifyTaskId", () => {
+	// The host auto-assigns a bare "bg_1"-style id when none is supplied,
+	// which is meaningless to a human watching a live escalation/IRC
+	// transcript — this gives every dispatch a human-readable job id instead.
+	test("derives a short slug from the task text", () => {
+		expect(slugifyTaskId("Add an exported formatDate helper")).toBe(
+			"legion-add-an-exported-formatdate-helper",
+		);
+	});
+
+	test("falls back to a generic label for unslugifiable text", () => {
+		expect(slugifyTaskId("!!! 一二三 !!!")).toBe("legion-dispatch");
 	});
 });

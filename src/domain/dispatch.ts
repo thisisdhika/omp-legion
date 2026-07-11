@@ -33,6 +33,26 @@ export const dispatchTaskSchema = z.object({
 	description: z.string().trim().min(1).optional(),
 });
 
+const SLUG_MAX_LENGTH = 40;
+const SLUG_MAX_WORDS = 6;
+
+/**
+ * A short, human-readable job-id slug derived from the task text, so a live
+ * escalation/IRC transcript reads "legion-add-formatdate-export" instead of
+ * the host's bare auto-incrementing "bg_1" — the id is otherwise meaningless
+ * to a human watching the session. Falls back to "legion-dispatch" for task
+ * text with no usable word characters (e.g. pure symbols/non-Latin script).
+ */
+export function slugifyTaskId(task: string): string {
+	const words = task
+		.toLowerCase()
+		.match(/[a-z0-9]+/g)
+		?.slice(0, SLUG_MAX_WORDS);
+	if (!words || words.length === 0) return "legion-dispatch";
+	const slug = words.join("-").slice(0, SLUG_MAX_LENGTH).replace(/-+$/, "");
+	return slug ? `legion-${slug}` : "legion-dispatch";
+}
+
 export const dispatchRequestSchema = z.object({
 	task: z.string().trim().min(1),
 	tasks: z.array(dispatchTaskSchema).min(1).optional(),
