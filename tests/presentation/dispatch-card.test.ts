@@ -40,7 +40,7 @@ describe("renderDispatchResult", () => {
 			args,
 		);
 
-		const body = textOf(card, 1);
+		const body = textOf(card, 0);
 		expect(body).toContain("tasks: auto-decompose");
 		expect(body).toContain("job: LegionReviewTheChange");
 		expect(body).toContain("attempts: 3");
@@ -70,7 +70,7 @@ describe("renderDispatchResult", () => {
 			args,
 		);
 
-		const body = textOf(card, 1);
+		const body = textOf(card, 0);
 		expect(body).toContain("tasks: 2 explicit");
 		expect(body).toContain("t1 (reviewer)");
 		expect(body).toContain("t2 (coder)");
@@ -89,7 +89,7 @@ describe("renderDispatchResult", () => {
 			args,
 		);
 
-		expect(textOf(card, 1)).toContain("Legion dispatch rejected: bad input");
+		expect(textOf(card, 0)).toContain("Legion dispatch rejected: bad input");
 	});
 
 	test("renders without args when none are available", () => {
@@ -107,6 +107,6 @@ describe("renderDispatchResult", () => {
 			theme,
 		);
 
-		expect(textOf(card, 1)).toContain("job: LegionDispatch");
+		expect(textOf(card, 0)).toContain("job: LegionDispatch");
 	});
 });

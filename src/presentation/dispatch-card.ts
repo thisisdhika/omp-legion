@@ -7,35 +7,53 @@ import type { LegionDispatchDetails } from "./dispatch-tool";
 
 const TASK_PREVIEW_LENGTH = 60;
 
-function header(theme: Theme, icon: string, title: string): string {
-	const text = `${icon}  ${title}`;
-	return theme.fg?.("accent", theme.bold?.(text) ?? text) ?? text;
+export interface TreeNode {
+	readonly label: string;
+	readonly children?: readonly TreeNode[];
 }
 
-/** Same visual language as the screenshot you liked — "├─"/"└─" tree rows. */
-function treeLines(rows: readonly string[]): string {
-	return rows
-		.map((row, index) => `${index === rows.length - 1 ? "└─" : "├─"} ${row}`)
-		.join("\n");
+/**
+ * A real tree: each node gets its own "├─"/"└─" connector, and children are
+ * indented under a continuation prefix ("│  " when their parent isn't the
+ * last sibling, "   " when it is) — not just extra leading spaces on an
+ * otherwise-flat line, which is what the first attempt at this did.
+ */
+function renderTree(nodes: readonly TreeNode[], prefix = ""): string[] {
+	const lines: string[] = [];
+	nodes.forEach((node, index) => {
+		const isLast = index === nodes.length - 1;
+		lines.push(`${prefix}${isLast ? "└─" : "├─"} ${node.label}`);
+		if (node.children?.length) {
+			const childPrefix = `${prefix}${isLast ? "   " : "│  "}`;
+			lines.push(...renderTree(node.children, childPrefix));
+		}
+	});
+	return lines;
 }
 
 function truncate(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function requestRows(args: DispatchRequest | undefined): string[] {
+function requestNodes(args: DispatchRequest | undefined): TreeNode[] {
 	if (!args) return [];
-	const rows = [`task: "${truncate(args.task, TASK_PREVIEW_LENGTH)}"`];
-	if (args.tasks?.length) {
-		rows.push(`tasks: ${args.tasks.length} explicit`);
-		for (const task of args.tasks) rows.push(`  ${task.id} (${task.role})`);
-	} else {
-		rows.push("tasks: auto-decompose");
-	}
+	const nodes: TreeNode[] = [
+		{ label: `task: "${truncate(args.task, TASK_PREVIEW_LENGTH)}"` },
+	];
+	nodes.push(
+		args.tasks?.length
+			? {
+					label: `tasks: ${args.tasks.length} explicit`,
+					children: args.tasks.map((task) => ({
+						label: `${task.id} (${task.role})`,
+					})),
+				}
+			: { label: "tasks: auto-decompose" },
+	);
 	const modelMapKeys = Object.keys(args.modelMap ?? {});
 	if (modelMapKeys.length > 0)
-		rows.push(`modelMap: ${modelMapKeys.join(", ")}`);
-	return rows;
+		nodes.push({ label: `modelMap: ${modelMapKeys.join(", ")}` });
+	return nodes;
 }
 
 /**
@@ -51,32 +69,30 @@ export function renderDispatchResult(
 	theme: Theme,
 	args?: DispatchRequest,
 ): Container {
+	// No title/header line here — the host already renders one above every
+	// tool block from the tool's own `label` ("Legion"). Adding another one
+	// here duplicated it; this card is body-only.
 	const card = new Container();
-	const icon = result.isError
-		? theme.icon?.warning || "⚠"
-		: theme.icon?.extensionTool || "⌘";
-	card.addChild(new Text(header(theme, icon, "Legion Dispatch"), 0, 0));
-
 	const details = result.details;
 	if (result.isError || !details) {
 		const first = result.content?.[0];
 		const message =
 			first && first.type === "text" ? first.text : "Dispatch failed.";
-		const rows = [
-			...requestRows(args),
-			theme.fg?.("error", message) ?? message,
+		const nodes = [
+			...requestNodes(args),
+			{ label: theme.fg?.("error", message) ?? message },
 		];
-		card.addChild(new Text(treeLines(rows), 0, 0));
+		card.addChild(new Text(renderTree(nodes).join("\n"), 0, 0));
 		return card;
 	}
 
-	const rows = [
-		...requestRows(args),
-		`job: ${details.jobId}`,
-		`attempts: ${details.attemptCount}`,
-		`models: ${[...new Set(details.attemptModels)].join(", ")}`,
-		"results deliver asynchronously",
+	const nodes: TreeNode[] = [
+		...requestNodes(args),
+		{ label: `job: ${details.jobId}` },
+		{ label: `attempts: ${details.attemptCount}` },
+		{ label: `models: ${[...new Set(details.attemptModels)].join(", ")}` },
+		{ label: "results deliver asynchronously" },
 	];
-	card.addChild(new Text(treeLines(rows), 0, 0));
+	card.addChild(new Text(renderTree(nodes).join("\n"), 0, 0));
 	return card;
 }

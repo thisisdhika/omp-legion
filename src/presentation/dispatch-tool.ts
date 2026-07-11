@@ -34,7 +34,7 @@ export function createDispatchTool(
 ): ToolDefinition<typeof dispatchRequestSchema, LegionDispatchDetails> {
 	return {
 		name: "legion_dispatch",
-		label: "Legion Dispatch",
+		label: "Legion",
 		description:
 			"Dispatch one task through the host task executor. Omit tasks to let Legion decompose the task automatically; returns immediately with a host job id.",
 		parameters: dispatchRequestSchema,
