@@ -10,6 +10,7 @@ import type {
 	JobScheduler,
 } from "../application/dispatch-service";
 import type { ExpertResult } from "../domain/dispatch";
+import { runAsDispatchedAgent } from "./agent-execution-context";
 
 export interface HostExecutorOptions {
 	readonly cwd: string;
@@ -51,30 +52,36 @@ export class HostExpertExecutor implements ExpertExecutor {
 		if (!agent)
 			throw new Error(`Unknown host agent "${execution.attempt.agent}".`);
 
-		const result = await runSubprocess({
-			cwd: this.#options.cwd,
-			agent,
-			task: execution.attempt.assignment,
-			assignment: execution.attempt.assignment,
-			context: execution.task,
-			description: execution.attempt.description,
-			role: execution.attempt.role,
-			index: execution.attempt.index,
-			id: execution.attempt.id,
-			parentToolCallId: execution.parentToolCallId,
-			detached: true,
-			modelOverride: execution.attempt.model,
-			parentActiveModelPattern: this.#options.parentActiveModelPattern,
-			sessionFile: this.#options.sessionFile,
-			persistArtifacts:
-				this.#options.sessionFile !== undefined &&
-				this.#options.sessionFile !== null,
-			artifactsDir: this.#options.artifactsDir,
-			parentArtifactManager: this.#options.parentArtifactManager,
-			modelRegistry: this.#options.modelRegistry,
-			eventBus: this.#options.eventBus,
-			signal: execution.signal,
-		});
+		// Tags this attempt's entire runSubprocess call chain with its agent
+		// name so irc-tool-guard.ts can identify legion-* callers later, from
+		// inside that same subagent's own tool_call events — see
+		// agent-execution-context.ts for why this is necessary at all.
+		const result = await runAsDispatchedAgent(execution.attempt.agent, () =>
+			runSubprocess({
+				cwd: this.#options.cwd,
+				agent,
+				task: execution.attempt.assignment,
+				assignment: execution.attempt.assignment,
+				context: execution.task,
+				description: execution.attempt.description,
+				role: execution.attempt.role,
+				index: execution.attempt.index,
+				id: execution.attempt.id,
+				parentToolCallId: execution.parentToolCallId,
+				detached: true,
+				modelOverride: execution.attempt.model,
+				parentActiveModelPattern: this.#options.parentActiveModelPattern,
+				sessionFile: this.#options.sessionFile,
+				persistArtifacts:
+					this.#options.sessionFile !== undefined &&
+					this.#options.sessionFile !== null,
+				artifactsDir: this.#options.artifactsDir,
+				parentArtifactManager: this.#options.parentArtifactManager,
+				modelRegistry: this.#options.modelRegistry,
+				eventBus: this.#options.eventBus,
+				signal: execution.signal,
+			}),
+		);
 
 		return {
 			attemptId: execution.attempt.id,

@@ -4,6 +4,7 @@ import type { DispatchService } from "./application/dispatch-service";
 import { loadDispatchAgents } from "./infrastructure/agent-loader";
 import { loadLegionConfig } from "./infrastructure/host-config";
 import { createHostDispatchService } from "./infrastructure/host-dispatch-service";
+import { registerIrcToolGuard } from "./infrastructure/irc-tool-guard";
 import { registerTaskToolGuard } from "./infrastructure/task-tool-guard";
 import { createDispatchTool } from "./presentation/dispatch-tool";
 
@@ -25,5 +26,6 @@ export default function legionExtension(api: ExtensionAPI): void {
 	});
 
 	registerTaskToolGuard(api);
+	registerIrcToolGuard(api);
 	api.registerTool(createDispatchTool(() => service));
 }

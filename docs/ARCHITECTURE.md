@@ -295,6 +295,53 @@ the `legion_dispatch` path. A native `task` call that happened to target
 project's equivalent guard, there is no config toggle to disable this: there
 is no legitimate reason to want a `legion-*` persona reachable ungoverned.
 
+### 4.3 `irc` tool guard (`infrastructure/irc-tool-guard.ts`, `infrastructure/agent-execution-context.ts`)
+
+**Why this exists:** the ensemble design depends on experts staying
+independent — each persona is told "you will never see their output... do
+not try to guess what another expert might produce" (§10). That's currently
+only a prompt instruction. The host force-adds `irc` to every subagent's
+tool whitelist unconditionally (`task/executor.ts`: "IRC is always
+available... a restricted whitelist must still carry `irc`"), regardless of
+what a persona's own `tools:` list says — there is no `AgentDefinition`-level
+way to opt out. So nothing currently code-enforces that two sibling experts
+in the same self-consistency ensemble can't use `irc` to coordinate
+mid-generation, which would correlate their errors and undermine the reason
+ensembling can beat a single model at all (§2, arXiv 2606.27288).
+
+**Why it isn't the same pattern as §4.2:** blocking `task` calls that
+*target* a `legion-*` agent only needs the call's own input (`event.input`).
+Blocking `irc` calls made *by* a running `legion-*` agent needs to know
+which agent is currently executing — and neither the host's `tool_call`
+event nor the reachable `ExtensionContext`/`AgentToolContext` exposes that
+anywhere. There is no host-native field to read.
+
+**Mechanism:** `agent-execution-context.ts` holds a module-scoped
+`AsyncLocalStorage<string>`. `HostExpertExecutor.run()` (`host-dispatcher.ts`)
+wraps its `runSubprocess(...)` call in `runAsDispatchedAgent(execution.attempt.agent,
+() => runSubprocess({...}))`. This works because subagents re-bind their
+extensions against a new `ExtensionAPI` **within the same process** rather
+than a separate one (`task/executor.ts`: "the subagent then re-binds each
+extension against its own ExtensionAPI") — so the store set around one
+attempt's `runSubprocess` call stays correctly scoped to that attempt's own
+later `tool_call` events, without leaking into concurrent sibling attempts
+(`AsyncLocalStorage` isolates each call's context even when several attempts
+run concurrently via `Promise.all`). `registerIrcToolGuard(api)` then checks
+`shouldBlockIrc(currentDispatchAgentName())` — `isLegionAgentName` on
+whatever the store currently holds — and blocks only when true.
+
+**Fails open, deliberately:** if the store is ever unset (a non-Legion
+subagent, or any code path outside a Legion dispatch), the call is never
+blocked. A detection gap here must not silently break IRC for unrelated
+subagents.
+
+**Implementation status:** implemented and unit-tested (including a
+concurrent-attempts test asserting no cross-attempt leakage), but **not yet
+live-verified** against a real host session — the mechanism relies on the
+host's internal turn loop staying within one continuous async chain from
+the `runSubprocess` call, which unit tests with hand-written async
+gaps can approximate but not prove against the actual host runtime.
+
 ## 5. Synthesis — the MoA layer (`domain/synthesis.ts`)
 
 `SynthesisService.synthesize(input)`:
