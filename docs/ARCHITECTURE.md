@@ -418,6 +418,21 @@ degraded path.
 - `approval: "exec"` — the call itself goes through the host's normal tool
   approval flow; HOTL governance (§7) is a separate, later gate entirely
   unrelated to this approval.
+- **`description` carries the "when," not just the "what."** A tool's
+  description is in the model's active tool list on every turn it considers
+  what to do — far higher salience than `rules/legion-dispatch.md`, which is
+  a static block injected once at session start and competes with everything
+  else in a growing context window. Per Anthropic's own tool-use guidance
+  ("be prescriptive about when to call it, not just what it does... trigger
+  conditions in the description give measurable lift in should-call rate"),
+  the description explicitly states when to reach for it (judgment calls,
+  security-sensitive changes, subtle correctness bugs, architecture
+  decisions — *even when the user's own request never mentions review or
+  this tool by name*), when not to (routine low-stakes work — ensembling has
+  real latency/token cost), its async/non-blocking behavior, and the
+  no-recursive-dispatch constraint. The rule file remains the deeper
+  explanation for when the model does look at it; the description is what
+  makes it look in the first place.
 
 ### 6.2 The tree card (`dispatch-card.ts`)
 

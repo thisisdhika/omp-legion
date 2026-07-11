@@ -40,7 +40,7 @@ export function createDispatchTool(
 		name: "legion_dispatch",
 		label: "Legion",
 		description:
-			"Dispatch one task through the host task executor. Omit tasks to let Legion decompose the task automatically; returns immediately with a host job id.",
+			"Runs one task through several independent expert attempts in parallel and returns a single synthesized, cross-checked answer — an ensemble review, not a subagent spawner. Use it whenever a task is a judgment call where being wrong is costly and a second opinion would catch it, even if the user never asks for review or mentions this tool by name: security-sensitive changes, a subtle correctness bug, an architecture or design decision, or any moment where the right move is to sanity-check the answer before committing to it. Do not use it for routine, low-stakes work that can just be done directly — ensembling has real latency and token cost. The call returns immediately with a job id and delivers its result asynchronously, including an automatic escalation to a human if the experts disagree too much or confidence is low, so never block waiting on it. Omit tasks to let it decompose the task automatically, or supply an explicit tasks array when the natural split is already known. Never call this tool from inside a task that this tool itself dispatched — experts give one independent answer and must not spawn further ensembles.",
 		parameters: dispatchRequestSchema,
 		approval: "exec",
 		async execute(toolCallId, params, signal, onUpdate, _ctx) {
