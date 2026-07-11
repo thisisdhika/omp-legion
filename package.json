@@ -1,0 +1,77 @@
+{
+	"name": "omp-legion",
+	"version": "0.1.0",
+	"description": "MoA-over-MoE orchestration with HOTL governance for Oh My Pi",
+	"type": "module",
+	"main": "src/index.ts",
+	"files": ["src/", "src/agents/"],
+	"omp": {
+		"name": "legion",
+		"version": "0.1.0",
+		"description": "MoA-over-MoE orchestration with HOTL governance for Oh My Pi",
+		"extensions": ["src/index.ts"],
+		"settings": {
+			"modelMap": {
+				"type": "string",
+				"description": "JSON object mapping roles to models, strategy, and ensemble size."
+			},
+			"defaultEnsembleSize": {
+				"type": "number",
+				"description": "Default number of expert samples per role."
+			},
+			"hotl.confidenceFloor": {
+				"type": "number",
+				"description": "Escalate when synthesis confidence falls below this value."
+			},
+			"hotl.disagreementThreshold": {
+				"type": "number",
+				"description": "Escalate when synthesis disagreement exceeds this value."
+			},
+			"hotl.costCeiling": {
+				"type": "number",
+				"description": "Escalate when host-reported token cost exceeds this value."
+			},
+			"embed.baseUrl": {
+				"type": "string",
+				"description": "Ollama embedding service base URL."
+			},
+			"embed.apiKey": {
+				"type": "string",
+				"secret": true,
+				"description": "Optional Ollama embedding service API key."
+			},
+			"embed.model": {
+				"type": "string",
+				"description": "Ollama embedding model name."
+			}
+		}
+	},
+	"pi": {
+		"extensions": ["src/index.ts"]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "bun test",
+		"lint": "biome check --diagnostic-level=error .",
+		"format": "biome format --write ."
+	},
+	"dependencies": {
+		"zod": "4"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.8.3",
+		"@types/bun": "^1.3.14",
+		"@types/node": "^22.20.0",
+		"typescript": "^5.7.0"
+	},
+	"peerDependencies": {
+		"@oh-my-pi/pi-coding-agent": ">=16.0.0",
+		"@oh-my-pi/pi-mnemopi": ">=16.0.0",
+		"@oh-my-pi/pi-utils": ">=16.0.0"
+	},
+	"engines": {
+		"bun": ">=1.3.0"
+	},
+	"keywords": ["oh-my-pi", "omp", "omp-plugin", "moa", "moe", "governance"],
+	"license": "MIT"
+}
