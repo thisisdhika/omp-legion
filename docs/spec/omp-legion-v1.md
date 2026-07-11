@@ -1,6 +1,6 @@
 # omp-legion v1 — Technical Spec
 
-**Status:** core dispatch, automatic decomposition, synthesis, HOTL governance with an awaited background decision gate, host-native config, and extension entrypoint are implemented; durable Legion audit persistence and explicit registry-level embeddings remain open. Every section below states what v1 does and, where relevant, explicitly what it does not — the project this replaced accumulated four rounds of planning docs that drifted from its actual implementation, and the discipline of this spec is to never repeat that.
+**Status:** core dispatch, automatic decomposition, synthesis, HOTL governance with an awaited background decision gate, host-native config, extension entrypoint, durable Legion audit persistence, and explicit registry-level embeddings are implemented. A live real-model comparison harness is available at `scripts/benchmark.ts`; benchmark results remain user-run and are intentionally not claimed here. Every section below states what v1 does and, where relevant, explicitly what it does not — the project this replaced accumulated four rounds of planning docs that drifted from its actual implementation, and the discipline of this spec is to never repeat that.
 
 **Rule this spec exists to enforce:** every claim below is either true of the code as it's built, or explicitly marked "not yet built." No aspirational claims.
 
@@ -64,7 +64,7 @@ A real LLM aggregator — not a heuristic self-graded score — reads the origin
 
 **Semantic-clustering-aware majority voting is in v1 scope, not deferred.** This was a real correction during design: naive majority voting over free-text answers is vulnerable to vote-splitting — semantically-equivalent-but-differently-worded answers split the vote, and per [arXiv 2503.15838](https://arxiv.org/abs/2503.15838), unclustered voting made accuracy *worse* as sample count increased (83.3%→80.1%, N=1→N=32) until semantic dedup was applied, after which it improved substantially, in one case 84.8%→94.9%. Legion must reliably obtain real embedding vectors (via the host registry → mnemopi → Ollama fallback chain) for the vote-clustering step; a degraded mock-hash-vector fallback (if no real embedding provider is reachable) must be surfaced with a startup warning, never silently used.
 
-**Implementation status:** Semantic clustering, host Mnemopi/Ollama embedding attempts, and degraded Rouge-L fallback are implemented. An explicit host model-registry embedding adapter remains open.
+**Implementation status:** Semantic clustering, the host model-registry embedding adapter, host Mnemopi/Ollama fallback attempts, and degraded Rouge-L fallback are implemented.
 **Aggregator bias caution:** LLM-as-judge/aggregator setups carry documented self-preference bias (favoring outputs resembling their own style — [arXiv 2410.21819](https://arxiv.org/pdf/2410.21819)). Where practical, prefer majority-voting/cross-check signals feeding the aggregator's input over trusting one aggregator's unchecked judgment alone.
 
 ## 7. HOTL: async escalation, not a blocking gate
@@ -82,7 +82,7 @@ Legion persists only genuinely Legion-owned composite data, keyed against the ho
 - The orchestration record: decomposition plan, which sub-task maps to which subagent/job ID, current phase.
 - HOTL packets: what triggered escalation, options, cost, resolution.
 - Confidence/disagreement scores + synthesis result — the actual audit trail. (Per the EU AI Act Article 14, Aug-2026-deadline research, a demonstrable/measurable human-oversight trail is the real deliverable of a HOTL product, not overhead.)
-**Implementation status:** `DispatchRecord` stores the orchestration, synthesis, governance, and human-resolution audit data in the process-local `InMemoryOrchestrationRepository`; durable cross-restart persistence is intentionally open.
+**Implementation status:** `DispatchRecord` stores the orchestration, synthesis, governance, and human-resolution audit data in host session custom entries, restored when the session is reopened; `HostOrchestrationRepository` is the durable implementation and `InMemoryOrchestrationRepository` remains the fallback/test double.
 
 **The concrete bug debt this design resolves by construction:** the prior codebase's P0 (an uncaught `TransitionError` permanently stranding a resumed escalated orchestration), a dead `halo_override resume` path, and a TOCTOU display-ID collision all lived in a bespoke `StateManager`/`TransitionService`/checkpoint system built to solve "does this survive a restart and resume" — a problem the host already solves per-subagent. Async escalation (§7) removes most of the reason that system needed to exist at all.
 
@@ -92,7 +92,7 @@ Legion persists only genuinely Legion-owned composite data, keyed against the ho
 - **HOTL thresholds** — confidence floor, disagreement threshold, cost ceiling. The actual governance knobs behind §7's async notification.
 - **Ensemble size N** per role — small default (e.g. 3), not "maximize free-tier usage."
 - **Embedding provider settings** (`embed.baseUrl`/`apiKey`/`model`) — the Ollama fallback tier, now load-bearing per §6, not just a nicety.
-**Implementation status:** These settings are loaded once per session through the host plugin-settings API, merged with centralized Legion defaults, and injected into the session-scoped dispatch service. `modelMap` also accepts a JSON string for host settings UI compatibility.
+**Implementation status:** These settings are loaded once per session through the host plugin-settings API, merged with centralized Legion defaults, and injected into the session-scoped dispatch service. The embedding provider uses the configured model selector for the registry tier before Mnemopi and Ollama fallback. `modelMap` also accepts a JSON string for host settings UI compatibility.
 
 **Explicitly not reintroduced:** the old `escalationMode`/mode-preset toggle system. Escalation is always async-notification (§7) — a mode toggle over one behavior is an option with nothing behind it.
 

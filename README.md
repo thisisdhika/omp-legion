@@ -31,4 +31,4 @@ Full design rationale and the decision record behind every choice above: [`docs/
 
 ## Status
 
-Core implementation is in place: host-native project config, automatic LLM task decomposition with single-task fallback, async expert dispatch, semantic synthesis, and an awaited HOTL decision gate in the background job (approve, reject, or edit-and-resynthesize). Durable cross-restart audit persistence and an explicit host-registry embedding adapter remain open; see the spec for the exact v1 boundary.
+Core implementation is in place: host-native project config, automatic LLM task decomposition with single-task fallback, async expert dispatch, semantic synthesis, an awaited HOTL decision gate in the background job (approve, reject, or edit-and-resynthesize), durable session-backed audit persistence, and a host model-registry → Mnemopi → Ollama embedding chain. The live benchmark harness is `scripts/benchmark.ts`; run it against your configured models for manual ensemble versus single-model comparison.
