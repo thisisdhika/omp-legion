@@ -1,3 +1,5 @@
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import {
 	available as mnemopiAvailable,
 	embed as mnemopiEmbed,
@@ -10,9 +12,20 @@ import {
 } from "../domain/constants";
 import type { EmbeddingProvider } from "../domain/synthesis";
 
+export type EmbeddingModelRegistry = Pick<
+	ModelRegistry,
+	"find" | "getAll" | "getApiKey" | "getAvailable"
+>;
+
 export interface OllamaEmbeddingOptions {
 	readonly baseUrl?: string;
 	readonly apiKey?: string;
+	readonly model?: string;
+	readonly modelRegistry?: EmbeddingModelRegistry;
+}
+
+export interface HostModelRegistryEmbeddingOptions {
+	readonly modelRegistry: EmbeddingModelRegistry;
 	readonly model?: string;
 }
 
@@ -38,31 +51,78 @@ function apiUrl(baseUrl: string, path: string): string {
 		: `${normalized}/api/${path}`;
 }
 
+function registryEmbeddingUrl(baseUrl: string): string {
+	const normalized = baseUrl.replace(/\/+$/u, "");
+	return normalized.endsWith("/v1") || normalized.endsWith("/api")
+		? `${normalized}/embeddings`
+		: `${normalized}/v1/embeddings`;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+	return value !== null && typeof value === "object"
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function readVector(value: unknown): number[] | null {
+	return Array.isArray(value) && value.every(Number.isFinite) ? value : null;
+}
+
 async function readOllamaBatch(
 	response: Response,
 	count: number,
 ): Promise<number[][] | null> {
 	if (!response.ok) return null;
-	const body = (await response.json()) as {
-		embeddings?: number[][];
-		embedding?: number[];
-	};
-	if (Array.isArray(body.embeddings) && validVectors(body.embeddings, count))
-		return body.embeddings;
-	if (
-		count === 1 &&
-		Array.isArray(body.embedding) &&
-		validVectors([body.embedding], 1)
-	)
-		return [body.embedding];
+	const body = readRecord(await response.json());
+	const embeddings = body?.embeddings;
+	if (Array.isArray(embeddings) && validVectors(embeddings, count))
+		return embeddings;
+	const embedding = body?.embedding;
+	if (count === 1 && Array.isArray(embedding) && validVectors([embedding], 1))
+		return [embedding];
 	return null;
 }
 
-export class HostEmbeddingProvider implements EmbeddingProvider {
-	readonly #options: OllamaEmbeddingOptions;
-	#warned = false;
+async function readRegistryBatch(
+	response: Response,
+	count: number,
+): Promise<number[][] | null> {
+	if (!response.ok) return null;
+	const body = readRecord(await response.json());
+	if (!body || !Array.isArray(body.data)) return null;
+	const vectors = body.data.map((item) => {
+		const entry = readRecord(item);
+		return readVector(entry?.embedding);
+	});
+	const resolved = vectors.filter(
+		(vector): vector is number[] => vector !== null,
+	);
+	return resolved.length === vectors.length && validVectors(resolved, count)
+		? resolved
+		: null;
+}
 
-	constructor(options: OllamaEmbeddingOptions = {}) {
+function findRegistryModel(
+	registry: EmbeddingModelRegistry,
+	selector: string,
+): Model<Api> | undefined {
+	const separator = selector.indexOf("/");
+	if (separator > 0) {
+		return registry.find(
+			selector.slice(0, separator),
+			selector.slice(separator + 1),
+		);
+	}
+	return (
+		registry.getAvailable().find((model) => model.id === selector) ??
+		registry.getAll().find((model) => model.id === selector)
+	);
+}
+
+export class HostModelRegistryEmbeddingAdapter implements EmbeddingProvider {
+	readonly #options: HostModelRegistryEmbeddingOptions;
+
+	constructor(options: HostModelRegistryEmbeddingOptions) {
 		this.#options = options;
 	}
 
@@ -71,13 +131,62 @@ export class HostEmbeddingProvider implements EmbeddingProvider {
 		signal?: AbortSignal,
 	): Promise<readonly (readonly number[])[] | null> {
 		try {
+			const selector = this.#options.model?.trim();
+			if (!selector) return null;
+			const model = findRegistryModel(this.#options.modelRegistry, selector);
+			if (!model) return null;
+			const headers: Record<string, string> = {
+				...model.headers,
+				"Content-Type": "application/json",
+			};
+			const apiKey = await this.#options.modelRegistry.getApiKey(model);
+			if (apiKey && !headers.Authorization)
+				headers.Authorization = `Bearer ${apiKey}`;
+			const response = await fetch(registryEmbeddingUrl(model.baseUrl), {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ model: model.id, input: texts }),
+				signal,
+			});
+			return await readRegistryBatch(response, texts.length);
+		} catch {
+			return null;
+		}
+	}
+}
+
+export class HostEmbeddingProvider implements EmbeddingProvider {
+	readonly #options: OllamaEmbeddingOptions;
+	readonly #registryAdapter?: HostModelRegistryEmbeddingAdapter;
+	#warned = false;
+
+	constructor(options: OllamaEmbeddingOptions = {}) {
+		this.#options = options;
+		this.#registryAdapter = options.modelRegistry
+			? new HostModelRegistryEmbeddingAdapter({
+					modelRegistry: options.modelRegistry,
+					model: options.model,
+				})
+			: undefined;
+	}
+
+	async embed(
+		texts: readonly string[],
+		signal?: AbortSignal,
+	): Promise<readonly (readonly number[])[] | null> {
+		if (this.#registryAdapter) {
+			const vectors = await this.#registryAdapter.embed(texts, signal);
+			if (vectors !== null) return vectors;
+		}
+
+		try {
 			if (await mnemopiAvailable()) {
 				const vectors = await mnemopiEmbed(texts);
 				const normalized = vectors?.map((vector) => [...vector]) ?? null;
 				if (validVectors(normalized, texts.length)) return normalized;
 			}
 		} catch {
-			// The host Mnemopi path is best effort; Ollama is the explicit local fallback.
+			// The host Mnemopi path is best effort; local Ollama remains available.
 		}
 
 		const vectors = await this.#embedWithOllama(texts, signal);

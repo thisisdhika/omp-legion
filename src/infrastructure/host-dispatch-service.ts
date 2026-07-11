@@ -56,7 +56,10 @@ export function createHostDispatchService(
 			parentActiveModelPattern: activeModelSelector(ctx),
 		}),
 		synthesizer: new SynthesisService({
-			embeddingProvider: new HostEmbeddingProvider(config.embedding),
+			embeddingProvider: new HostEmbeddingProvider({
+				...config.embedding,
+				modelRegistry: ctx.modelRegistry,
+			}),
 			aggregator: new HostLlmAggregator({
 				model,
 				modelRegistry: ctx.modelRegistry,
