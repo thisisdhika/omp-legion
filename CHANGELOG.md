@@ -16,6 +16,19 @@ All notable changes to this project are documented here. Format follows
 - Host-native config surface: per-role `modelMap`, HOTL thresholds, default ensemble size, embedding provider settings — centralized in `src/domain/constants.ts`.
 - `config.example.json` documenting the full config surface (matches the host's real `.omp/plugin-overrides.json` JSON format — corrected from an initial, inaccurate YAML draft).
 - ADRs for the DDD/MVVM layering and the host-native dispatch decision.
+- Bundled per-role agent personas (`legion-coder`, `legion-reviewer` — read-only, `legion-tester`, `legion-generalist`), loaded via `infrastructure/agent-loader.ts`, overridable per-project/user via the host's standard agent discovery.
+- Native `task` tool guard (`infrastructure/task-tool-guard.ts`) blocking any call that targets a `legion-*` agent directly, so those personas are only ever reached through the governed `legion_dispatch` path.
+- Auto-discovered usage rule (`rules/legion-dispatch.md`) teaching the primary agent when and how to reach for `legion_dispatch`.
+- Custom tree-style `renderResult` card (`presentation/dispatch-card.ts`) replacing the host's generic tool-call display, with genuine recursive `├─`/`└─`/`│  ` nesting and each task's own `attempts`/`models` nested under it rather than shown as flat, detached top-level lines.
+- Human-readable, PascalCase job IDs (`humanReadableJobId`, e.g. `LegionReviewAndImplement`) replacing the host's bare `bg_1`-style counter in IRC/HUD transcripts.
+- `docs/ARCHITECTURE.md` — a detailed, file-by-file implementation reference covering every layer, the full request lifecycle, and the config/persistence/testing surface.
+
+### Fixed
+- Double tool-header render (`renderCall` + `renderResult` rendering as two separately-headed blocks) — resolved by dropping `renderCall` and doing everything in `renderResult` using its `args` parameter.
+- Subagent spawns not appearing in the interactive "Subagents" HUD — root cause was a missing `eventBus` (only reachable via `ExtensionAPI.events` at `session_start` registration time, not `ExtensionContext`), now threaded through the full executor call chain.
+- LLM decomposer occasionally inventing unresolvable `agent` names, causing dispatch failures — the decomposer's LLM contract no longer includes `agent` at all; it's always resolved from `role` via `resolveAgentName`, never trusted from caller or LLM output.
+- Zod `.default()` silently not applying to a present-but-`undefined` config field — fixed with a `withoutUndefined()` merge helper.
+- Tool label shortened from "Legion Dispatch" to "Legion" — redundant given this extension ships exactly one tool.
 
 ### Known open items
 See the spec status table in [`docs/spec/omp-legion-v1.md`](docs/spec/omp-legion-v1.md) for the authoritative, currently-true list. As of this entry: empirical quality benchmarking against a reachable frontier model remains a manual validation step, not code.

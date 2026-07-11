@@ -27,8 +27,8 @@ Oh-My-Pi already owns: subagent process lifecycle, peer-to-peer agent messaging 
 - HOTL threshold policy and the async escalation notification.
 - The orchestration record and audit trail — confidence scores, disagreement, what triggered escalation, how it resolved. This is the actual deliverable of a human-on-the-loop tool, not paperwork bolted on after the fact.
 
-Full design rationale and the decision record behind every choice above: [`docs/spec/omp-legion-v1.md`](docs/spec/omp-legion-v1.md).
+Full design rationale and the decision record behind every choice above: [`docs/spec/omp-legion-v1.md`](docs/spec/omp-legion-v1.md). For a detailed, file-by-file walkthrough of how the shipped code implements it: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Status
 
-Core implementation is in place: host-native project config, automatic LLM task decomposition with single-task fallback, async expert dispatch, semantic synthesis, an awaited HOTL decision gate in the background job (approve, reject, or edit-and-resynthesize), durable session-backed audit persistence, and a host model-registry → Mnemopi → Ollama embedding chain. The live benchmark harness is `scripts/benchmark.ts`; run it against your configured models for manual ensemble versus single-model comparison.
+Core implementation is in place: host-native project config, automatic LLM task decomposition with single-task fallback, async expert dispatch, semantic synthesis, an awaited HOTL decision gate in the background job (approve, reject, or edit-and-resynthesize), durable session-backed audit persistence, a host model-registry → Mnemopi → Ollama embedding chain, bundled per-role agent personas (`legion-coder`/`legion-reviewer`/`legion-tester`/`legion-generalist`) with a native-`task`-tool guard so they're only reachable through governed dispatch, an auto-discovered usage rule (`rules/legion-dispatch.md`) teaching the primary agent when to reach for it, and a tree-style TUI card showing each task's own attempts/models nested under it. The live benchmark harness is `scripts/benchmark.ts`; run it against your configured models for manual ensemble versus single-model comparison.

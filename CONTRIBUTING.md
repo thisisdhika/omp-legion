@@ -6,10 +6,13 @@ is not.
 
 ## Before you open anything
 
-Read [`README.md`](README.md) and [`docs/spec/omp-legion-v1.md`](docs/spec/omp-legion-v1.md)
-first. The spec's own discipline is that every claim in it is either true of
-the code or explicitly marked open — if you're proposing a change that would
-make a spec claim false, update the spec in the same PR.
+Read [`README.md`](README.md), [`docs/spec/omp-legion-v1.md`](docs/spec/omp-legion-v1.md),
+and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first. The spec explains
+why each decision was made; ARCHITECTURE.md explains how the shipped code
+implements it, file by file. Both carry the same discipline: every claim in
+them is either true of the code or explicitly marked open — if you're
+proposing a change that would make a claim in either false, update that doc
+in the same PR.
 
 ## Reporting bugs / requesting features
 
