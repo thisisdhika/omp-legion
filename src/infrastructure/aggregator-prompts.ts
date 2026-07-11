@@ -3,14 +3,15 @@ import type { AggregatorInput } from "../domain/synthesis";
 
 export const DECOMPOSER_SYSTEM_PROMPT = [
 	"You decompose coding tasks into independent specialist assignments.",
-	"Return only valid JSON with a tasks array; each task must include id, agent, role, and assignment.",
+	"Return only valid JSON with a tasks array; each task must include id, role, and assignment.",
+	'"role" is a short specialization label (e.g. "coder", "reviewer", "tester") — it selects which configured expert model handles the task, not a literal system agent name. Never invent an "agent" field; it is not part of this contract.',
 ];
 
 export function buildDecomposerPrompt(input: DecompositionInput): string {
 	return [
 		`Task to decompose:\n${input.task}`,
 		"Create the smallest useful set of role-tagged tasks. Do not invent work unrelated to the task.",
-		'Return JSON only: {"tasks":[{"id":"...","agent":"...","role":"...","assignment":"...","description":"..."}]}',
+		'Return JSON only: {"tasks":[{"id":"...","role":"...","assignment":"...","description":"..."}]}',
 	].join("\n\n");
 }
 
