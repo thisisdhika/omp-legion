@@ -1,7 +1,10 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 
-import type { DispatchService } from "../application/dispatch-service";
+import type {
+	DispatchService,
+	TaskAttemptSummary,
+} from "../application/dispatch-service";
 import { dispatchRequestSchema } from "../domain/dispatch";
 import { renderDispatchResult } from "./dispatch-card";
 
@@ -11,6 +14,7 @@ export interface LegionDispatchDetails {
 	readonly state: "running";
 	readonly attemptCount: number;
 	readonly attemptModels: readonly string[];
+	readonly taskBreakdown: readonly TaskAttemptSummary[];
 }
 
 export type DispatchServiceResolver = () => DispatchService | undefined;
@@ -71,6 +75,7 @@ export function createDispatchTool(
 					state: "running",
 					attemptCount: accepted.attemptCount,
 					attemptModels: accepted.attemptModels,
+					taskBreakdown: accepted.taskBreakdown,
 				};
 				const result = immediateResult(details);
 				onUpdate?.(result);

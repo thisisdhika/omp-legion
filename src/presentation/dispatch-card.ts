@@ -2,6 +2,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { Container, Text } from "@oh-my-pi/pi-tui";
 
+import type { TaskAttemptSummary } from "../application/dispatch-service";
 import type { DispatchRequest } from "../domain/dispatch";
 import type { LegionDispatchDetails } from "./dispatch-tool";
 
@@ -35,7 +36,20 @@ function truncate(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function requestNodes(args: DispatchRequest | undefined): TreeNode[] {
+function taskAttemptNodes(
+	summary: TaskAttemptSummary | undefined,
+): TreeNode[] | undefined {
+	if (!summary) return undefined;
+	return [
+		{ label: `attempts: ${summary.attemptCount}` },
+		{ label: `models: ${[...new Set(summary.models)].join(", ")}` },
+	];
+}
+
+function requestNodes(
+	args: DispatchRequest | undefined,
+	taskBreakdown: readonly TaskAttemptSummary[] = [],
+): TreeNode[] {
 	if (!args) return [];
 	const nodes: TreeNode[] = [
 		{ label: `task: "${truncate(args.task, TASK_PREVIEW_LENGTH)}"` },
@@ -46,6 +60,9 @@ function requestNodes(args: DispatchRequest | undefined): TreeNode[] {
 					label: `tasks: ${args.tasks.length} explicit`,
 					children: args.tasks.map((task) => ({
 						label: `${task.id} (${task.role})`,
+						children: taskAttemptNodes(
+							taskBreakdown.find((summary) => summary.taskId === task.id),
+						),
 					})),
 				}
 			: { label: "tasks: auto-decompose" },
@@ -86,11 +103,20 @@ export function renderDispatchResult(
 		return card;
 	}
 
+	// Explicit tasks already carry their own attempts/models as children (see
+	// requestNodes); only auto-decompose (no task breakdown known yet at
+	// request time) needs the aggregate shown as flat top-level lines.
 	const nodes: TreeNode[] = [
-		...requestNodes(args),
+		...requestNodes(args, details.taskBreakdown),
 		{ label: `job: ${details.jobId}` },
-		{ label: `attempts: ${details.attemptCount}` },
-		{ label: `models: ${[...new Set(details.attemptModels)].join(", ")}` },
+		...(details.taskBreakdown.length > 0
+			? []
+			: [
+					{ label: `attempts: ${details.attemptCount}` },
+					{
+						label: `models: ${[...new Set(details.attemptModels)].join(", ")}`,
+					},
+				]),
 		{ label: "results deliver asynchronously" },
 	];
 	card.addChild(new Text(renderTree(nodes).join("\n"), 0, 0));

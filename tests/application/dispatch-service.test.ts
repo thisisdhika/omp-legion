@@ -239,6 +239,9 @@ describe("DispatchService", () => {
 		});
 
 		expect(accepted.attemptCount).toBe(5);
+		expect(accepted.taskBreakdown).toEqual([
+			{ taskId: "review", attemptCount: 5, models: Array(5).fill("frontier") },
+		]);
 	});
 	test("runs every planned attempt with one persona and correlated model overrides", async () => {
 		const scheduler = new DeferredScheduler();

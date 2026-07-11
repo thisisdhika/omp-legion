@@ -93,11 +93,35 @@ export interface DispatchServiceOptions {
 	readonly now?: () => number;
 }
 
+export interface TaskAttemptSummary {
+	readonly taskId: string;
+	readonly attemptCount: number;
+	readonly models: readonly string[];
+}
+
 export interface DispatchAccepted {
 	readonly jobId: string;
 	readonly recordId: string;
 	readonly attemptCount: number;
 	readonly attemptModels: readonly string[];
+	readonly taskBreakdown: readonly TaskAttemptSummary[];
+}
+
+/** Groups a plan's attempts by taskId, preserving each task's first-seen order. */
+function summarizeAttemptsByTask(
+	attempts: readonly DispatchAttempt[],
+): TaskAttemptSummary[] {
+	const modelsByTask = new Map<string, string[]>();
+	for (const attempt of attempts) {
+		const models = modelsByTask.get(attempt.taskId) ?? [];
+		models.push(attempt.model);
+		modelsByTask.set(attempt.taskId, models);
+	}
+	return [...modelsByTask.entries()].map(([taskId, models]) => ({
+		taskId,
+		attemptCount: models.length,
+		models,
+	}));
 }
 
 function failedResult(
@@ -271,6 +295,7 @@ export class DispatchService {
 			recordId: jobId,
 			attemptCount: preview.attempts.length,
 			attemptModels: preview.attempts.map((attempt) => attempt.model),
+			taskBreakdown: summarizeAttemptsByTask(preview.attempts),
 		};
 	}
 

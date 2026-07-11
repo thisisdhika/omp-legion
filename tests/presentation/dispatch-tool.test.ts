@@ -15,6 +15,9 @@ describe("createDispatchTool", () => {
 					recordId: "job-1",
 					attemptCount: 3,
 					attemptModels: ["provider/model"],
+					taskBreakdown: [
+						{ taskId: "review", attemptCount: 3, models: ["provider/model"] },
+					],
 				};
 			},
 		} as unknown as DispatchService;

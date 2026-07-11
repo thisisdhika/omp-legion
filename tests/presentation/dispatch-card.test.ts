@@ -34,6 +34,7 @@ describe("renderDispatchResult", () => {
 					state: "running",
 					attemptCount: 3,
 					attemptModels: ["frontier", "frontier", "frontier"],
+					taskBreakdown: [],
 				},
 			},
 			theme,
@@ -64,6 +65,10 @@ describe("renderDispatchResult", () => {
 					state: "running",
 					attemptCount: 2,
 					attemptModels: ["frontier", "frontier"],
+					taskBreakdown: [
+						{ taskId: "t1", attemptCount: 1, models: ["frontier"] },
+						{ taskId: "t2", attemptCount: 1, models: ["claude"] },
+					],
 				},
 			},
 			theme,
@@ -74,6 +79,13 @@ describe("renderDispatchResult", () => {
 		expect(body).toContain("tasks: 2 explicit");
 		expect(body).toContain("t1 (reviewer)");
 		expect(body).toContain("t2 (coder)");
+		// Each task's own attempts/models nest under it, not as flat top-level
+		// lines detached from which task they actually belong to.
+		expect(body).toContain("attempts: 1");
+		expect(body).toContain("models: frontier");
+		expect(body).toContain("models: claude");
+		// job id is dispatch-wide (not per-task) and stays top-level.
+		expect(body).toContain("job: LegionReviewAndImplement");
 	});
 
 	test("shows the error message when dispatch was rejected", () => {
@@ -102,6 +114,7 @@ describe("renderDispatchResult", () => {
 					state: "running",
 					attemptCount: 1,
 					attemptModels: ["frontier"],
+					taskBreakdown: [],
 				},
 			},
 			theme,
