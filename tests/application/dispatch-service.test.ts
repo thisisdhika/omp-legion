@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+	type BranchMerger,
 	DispatchService,
 	type ExpertExecution,
 	type ExpertExecutor,
 	type JobRunContext,
 	type JobScheduler,
+	type WinningAttempt,
 } from "../../src/application/dispatch-service";
 import { mergeLegionConfig } from "../../src/domain/config";
 import type {
@@ -50,6 +52,44 @@ class RecordingExecutor implements ExpertExecutor {
 			tokens: 2,
 			requests: 1,
 		};
+	}
+}
+
+/** Every attempt "succeeds" with its own isolated branch, so merge/discard decisions are observable. */
+class BranchingExecutor implements ExpertExecutor {
+	readonly executions: ExpertExecution[] = [];
+
+	async run(execution: ExpertExecution): Promise<ExpertResult> {
+		this.executions.push(execution);
+		return {
+			attemptId: execution.attempt.id,
+			taskId: execution.attempt.taskId,
+			agent: execution.attempt.agent,
+			role: execution.attempt.role,
+			model: execution.attempt.model,
+			index: execution.attempt.index,
+			output: `output-${execution.attempt.index}`,
+			stderr: "",
+			exitCode: 0,
+			durationMs: 1,
+			tokens: 2,
+			requests: 1,
+			branchName: `branch-${execution.attempt.id}`,
+			baseSha: "base-sha",
+		};
+	}
+}
+
+class RecordingBranchMerger implements BranchMerger {
+	readonly merged: WinningAttempt[][] = [];
+	readonly discarded: string[][] = [];
+
+	async mergeWinners(winners: readonly WinningAttempt[]): Promise<void> {
+		this.merged.push([...winners]);
+	}
+
+	async discardBranches(branchNames: readonly string[]): Promise<void> {
+		this.discarded.push([...branchNames]);
 	}
 }
 
@@ -401,5 +441,148 @@ describe("DispatchService", () => {
 		// human resolved it, not just the merged answer and raw stats.
 		expect(summary).toContain("**Escalated**");
 		expect(summary).toContain("**approved** by human decision");
+	});
+
+	test("merges only the synthesis-selected winner's branch and discards every sibling", async () => {
+		const scheduler = new DeferredScheduler();
+		const branchMerger = new RecordingBranchMerger();
+		const service = new DispatchService({
+			scheduler,
+			executor: new BranchingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			branchMerger,
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 3,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		// RecordingSynthesizer picks experts[0] (attempt index 0) as the
+		// representative — only that attempt's branch should ever be merged.
+		expect(branchMerger.merged).toHaveLength(1);
+		expect(branchMerger.merged[0]).toHaveLength(1);
+		expect(branchMerger.merged[0]?.[0]?.taskId).toBe("review");
+		expect(branchMerger.merged[0]?.[0]?.branchName).toMatch(/-0$/);
+
+		// The other two attempts' branches are discarded, never merged.
+		expect(branchMerger.discarded.flat()).toHaveLength(2);
+		expect(
+			branchMerger.discarded.flat().every((name) => !name.endsWith("-0")),
+		).toBe(true);
+	});
+
+	test("caps total concurrent expert attempts at maxConcurrentExperts", async () => {
+		let inFlight = 0;
+		let maxObserved = 0;
+		class ConcurrencyTrackingExecutor implements ExpertExecutor {
+			async run(execution: ExpertExecution): Promise<ExpertResult> {
+				inFlight += 1;
+				maxObserved = Math.max(maxObserved, inFlight);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				inFlight -= 1;
+				return {
+					attemptId: execution.attempt.id,
+					taskId: execution.attempt.taskId,
+					agent: execution.attempt.agent,
+					role: execution.attempt.role,
+					model: execution.attempt.model,
+					index: execution.attempt.index,
+					output: "ok",
+					stderr: "",
+					exitCode: 0,
+					durationMs: 1,
+					tokens: 1,
+					requests: 1,
+				};
+			}
+		}
+
+		const scheduler = new DeferredScheduler();
+		const service = new DispatchService({
+			scheduler,
+			executor: new ConcurrencyTrackingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			maxConcurrentExperts: 2,
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 6,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		expect(maxObserved).toBeLessThanOrEqual(2);
+	});
+
+	test("discards every branch and merges nothing when a human rejects the task", async () => {
+		const scheduler = new DeferredScheduler();
+		const branchMerger = new RecordingBranchMerger();
+		const service = new DispatchService({
+			scheduler,
+			executor: new BranchingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			branchMerger,
+			governanceThresholds: {
+				confidenceFloor: 0.8,
+				disagreementThreshold: 0.4,
+				costCeiling: 100,
+			},
+			decisionGate: async () => ({ action: "reject" }),
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 2,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await expect(job(context())).rejects.toThrow();
+
+		// Nothing is ever merged once a task is rejected — every isolated
+		// attempt's branch (winner included) is discarded instead.
+		expect(branchMerger.merged).toHaveLength(0);
+		expect(branchMerger.discarded.flat()).toHaveLength(2);
 	});
 });

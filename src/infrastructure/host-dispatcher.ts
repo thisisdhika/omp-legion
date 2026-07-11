@@ -1,7 +1,18 @@
+import { tmpdir } from "node:os";
 import type { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
-import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type {
+	IsolatedRunOptions,
+	IsolationContext,
+} from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
+import {
+	prepareIsolationContext,
+	runIsolatedSubprocess,
+} from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
+import type {
+	AgentDefinition,
+	SingleResult,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 
 import type {
 	ExpertExecution,
@@ -40,6 +51,31 @@ export interface HostExecutorOptions {
 	readonly eventBus?: ExecutorOptions["eventBus"];
 }
 
+/** Builds a synthetic failure SingleResult when isolation setup itself throws (not a git repo, no backend available, etc.) — before the subagent ever ran. */
+function isolationFailureResult(
+	execution: ExpertExecution,
+	error: unknown,
+): SingleResult {
+	const message = error instanceof Error ? error.message : String(error);
+	return {
+		index: execution.attempt.index,
+		id: execution.attempt.id,
+		agent: execution.attempt.agent,
+		agentSource: "bundled",
+		task: execution.task,
+		assignment: execution.attempt.assignment,
+		description: execution.attempt.description,
+		exitCode: 1,
+		output: "",
+		stderr: message,
+		truncated: false,
+		durationMs: 0,
+		tokens: 0,
+		requests: 0,
+		error: message,
+	};
+}
+
 export class HostExpertExecutor implements ExpertExecutor {
 	readonly #options: HostExecutorOptions;
 
@@ -47,40 +83,77 @@ export class HostExpertExecutor implements ExpertExecutor {
 		this.#options = options;
 	}
 
+	/**
+	 * Resolved once per dispatch job (see ExpertExecutor.prepareJob's doc
+	 * comment) so every concurrent attempt in this job diffs against the same
+	 * git baseline, rather than each attempt capturing a slightly different
+	 * one depending on when it happened to start.
+	 */
+	async prepareJob(): Promise<IsolationContext> {
+		return prepareIsolationContext(this.#options.cwd);
+	}
+
 	async run(execution: ExpertExecution): Promise<ExpertResult> {
 		const agent = this.#options.agents.get(execution.attempt.agent);
 		if (!agent)
 			throw new Error(`Unknown host agent "${execution.attempt.agent}".`);
 
-		// Tags this attempt's entire runSubprocess call chain with its agent
-		// name so irc-tool-guard.ts can identify legion-* callers later, from
-		// inside that same subagent's own tool_call events — see
-		// agent-execution-context.ts for why this is necessary at all.
+		const isolationContext = execution.jobContext as
+			| IsolationContext
+			| undefined;
+		if (!isolationContext) {
+			throw new Error(
+				"Legion isolation context missing; prepareJob() must run before any attempt.",
+			);
+		}
+
+		const baseOptions: ExecutorOptions = {
+			cwd: this.#options.cwd,
+			agent,
+			task: execution.attempt.assignment,
+			assignment: execution.attempt.assignment,
+			context: execution.task,
+			description: execution.attempt.description,
+			role: execution.attempt.role,
+			index: execution.attempt.index,
+			id: execution.attempt.id,
+			parentToolCallId: execution.parentToolCallId,
+			detached: true,
+			modelOverride: execution.attempt.model,
+			parentActiveModelPattern: this.#options.parentActiveModelPattern,
+			sessionFile: this.#options.sessionFile,
+			persistArtifacts:
+				this.#options.sessionFile !== undefined &&
+				this.#options.sessionFile !== null,
+			artifactsDir: this.#options.artifactsDir,
+			parentArtifactManager: this.#options.parentArtifactManager,
+			modelRegistry: this.#options.modelRegistry,
+			eventBus: this.#options.eventBus,
+			signal: execution.signal,
+		};
+
+		const isolatedOptions: IsolatedRunOptions = {
+			baseOptions,
+			context: isolationContext,
+			// undefined lets the host's own backend resolver (PAL) pick whatever
+			// copy-on-write mechanism is actually available on this machine.
+			preferredBackend: undefined,
+			agentId: execution.attempt.id,
+			mergeMode: "branch",
+			// Only consulted when a successful run's branch commit fails — the
+			// isolated diff still needs somewhere to land as a .patch fallback.
+			artifactsDir: this.#options.artifactsDir ?? tmpdir(),
+			description: execution.attempt.description,
+			buildFailureResult: (err) => isolationFailureResult(execution, err),
+		};
+
+		// Tags this attempt's entire runSubprocess call chain (reached inside
+		// runIsolatedSubprocess) with its agent name so irc-tool-guard.ts can
+		// identify legion-* callers later, from inside that same subagent's own
+		// tool_call events — see agent-execution-context.ts for why this is
+		// necessary at all.
 		const result = await runAsDispatchedAgent(execution.attempt.agent, () =>
-			runSubprocess({
-				cwd: this.#options.cwd,
-				agent,
-				task: execution.attempt.assignment,
-				assignment: execution.attempt.assignment,
-				context: execution.task,
-				description: execution.attempt.description,
-				role: execution.attempt.role,
-				index: execution.attempt.index,
-				id: execution.attempt.id,
-				parentToolCallId: execution.parentToolCallId,
-				detached: true,
-				modelOverride: execution.attempt.model,
-				parentActiveModelPattern: this.#options.parentActiveModelPattern,
-				sessionFile: this.#options.sessionFile,
-				persistArtifacts:
-					this.#options.sessionFile !== undefined &&
-					this.#options.sessionFile !== null,
-				artifactsDir: this.#options.artifactsDir,
-				parentArtifactManager: this.#options.parentArtifactManager,
-				modelRegistry: this.#options.modelRegistry,
-				eventBus: this.#options.eventBus,
-				signal: execution.signal,
-			}),
+			runIsolatedSubprocess(isolatedOptions),
 		);
 
 		return {
@@ -98,6 +171,8 @@ export class HostExpertExecutor implements ExpertExecutor {
 			requests: result.requests,
 			error: result.error,
 			aborted: result.aborted,
+			branchName: result.branchName,
+			baseSha: result.branchBaseSha,
 		};
 	}
 }

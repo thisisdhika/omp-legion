@@ -1,6 +1,8 @@
+import { Semaphore } from "../domain/concurrency";
 import type { LegionConfig } from "../domain/config";
 import {
 	DEFAULT_ENSEMBLE_SIZE,
+	DEFAULT_MAX_CONCURRENT_EXPERTS,
 	HOTL_DECISION_APPROVE,
 	HOTL_DECISION_EDIT,
 	HOTL_DECISION_REJECT,
@@ -38,10 +40,26 @@ export interface ExpertExecution {
 	readonly task: string;
 	readonly parentToolCallId?: string;
 	readonly signal: AbortSignal;
+	/**
+	 * Job-scoped context returned by {@link ExpertExecutor.prepareJob}, opaque
+	 * to this layer (its real shape — an isolation baseline — is a host
+	 * concern; see infrastructure/host-dispatcher.ts). Undefined for
+	 * executors that don't implement `prepareJob`.
+	 */
+	readonly jobContext?: unknown;
 }
 
 export interface ExpertExecutor {
 	run(execution: ExpertExecution): Promise<ExpertResult>;
+	/**
+	 * Called once per dispatch job, before any attempt runs, when isolation
+	 * needs a stable baseline shared across every attempt in the job (so
+	 * concurrent attempts diff against the same starting point rather than
+	 * each capturing a slightly different one). The returned value is passed
+	 * back verbatim as every subsequent `run()` call's `jobContext`. Executors
+	 * that don't need job-scoped state simply omit this method.
+	 */
+	prepareJob?(): Promise<unknown>;
 }
 
 export interface JobRunContext {
@@ -59,6 +77,26 @@ export interface JobScheduler {
 		run: (context: JobRunContext) => Promise<string>,
 		id?: string,
 	): string;
+}
+
+/** A task's winning attempt (per SynthesisResult.clusters[0].representativeAttemptId) that actually produced a branch. */
+export interface WinningAttempt {
+	readonly taskId: string;
+	readonly branchName: string;
+	readonly baseSha?: string;
+}
+
+/**
+ * Merges isolated attempts' branches back onto the real repo. Every attempt
+ * ran in its own isolated worktree (see infrastructure/host-dispatcher.ts) —
+ * only the synthesis-selected winner per task should ever land on disk;
+ * every sibling attempt's branch is discarded, merged or not.
+ */
+export interface BranchMerger {
+	/** Merge each task's winning attempt branch onto the real repo. Never called for a rejected job — see #run(). */
+	mergeWinners(winners: readonly WinningAttempt[]): Promise<void>;
+	/** Delete branches that will never be merged — losing attempts, or every attempt when the whole job was rejected. */
+	discardBranches(branchNames: readonly string[]): Promise<void>;
 }
 
 export interface EscalationNotice {
@@ -91,6 +129,10 @@ export interface DispatchServiceOptions {
 	readonly notifyEscalation?: EscalationNotifier;
 	readonly decisionGate?: HumanDecisionGate;
 	readonly now?: () => number;
+	/** Caps total concurrent expert attempts across one dispatch (all tasks combined). See domain/concurrency.ts. */
+	readonly maxConcurrentExperts?: number;
+	/** Omit when the executor doesn't isolate attempts (e.g. test doubles) — no merge/discard step runs. */
+	readonly branchMerger?: BranchMerger;
 }
 
 export interface TaskAttemptSummary {
@@ -273,9 +315,13 @@ function summarizeResults(
 
 export class DispatchService {
 	readonly #options: DispatchServiceOptions;
+	readonly #concurrency: Semaphore;
 
 	constructor(options: DispatchServiceOptions) {
 		this.#options = options;
+		this.#concurrency = new Semaphore(
+			options.maxConcurrentExperts ?? DEFAULT_MAX_CONCURRENT_EXPERTS,
+		);
 	}
 
 	dispatch(rawRequest: unknown, parentToolCallId?: string): DispatchAccepted {
@@ -370,6 +416,11 @@ export class DispatchService {
 				attemptsByTask.set(attempt.taskId, attempts);
 			}
 
+			// Prepared once for the whole job (not per attempt, not per task) so
+			// every concurrent attempt diffs against the same starting point —
+			// see ExpertExecutor.prepareJob's doc comment.
+			const jobContext = await this.#options.executor.prepareJob?.();
+
 			const outcomes = await Promise.all(
 				[...attemptsByTask.entries()].map(async ([taskId, attempts]) => {
 					const results = await Promise.all(
@@ -379,11 +430,15 @@ export class DispatchService {
 								task: plan.task,
 								parentToolCallId,
 								signal: context.signal,
+								jobContext,
 							};
+							await this.#concurrency.acquire();
 							try {
 								return await this.#options.executor.run(execution);
 							} catch (error) {
 								return failedResult(execution, error);
+							} finally {
+								this.#concurrency.release();
 							}
 						}),
 					);
@@ -451,6 +506,13 @@ export class DispatchService {
 			);
 			const completedAt = now();
 			if (rejected) {
+				// The whole job failed — nothing gets merged, but every isolated
+				// attempt's branch (across every task) still needs discarding.
+				await this.#options.branchMerger?.discardBranches(
+					results.flatMap((result) =>
+						result.branchName ? [result.branchName] : [],
+					),
+				);
 				auditFailurePersisted = true;
 				this.#options.repository.fail(
 					context.jobId,
@@ -469,6 +531,29 @@ export class DispatchService {
 				);
 				throw new Error(`Human rejected task "${rejected.taskId}".`);
 			}
+			// Only the synthesis-selected winner per task ever lands on disk —
+			// every sibling attempt's isolated branch is discarded regardless of
+			// whether it was merged, matching the self-consistency/diverse
+			// selection policy already used for text synthesis (spec §5-6).
+			const winners: WinningAttempt[] = [];
+			const loserBranches: string[] = [];
+			for (const outcome of outcomes) {
+				const winnerId = outcome.synthesis.clusters[0]?.representativeAttemptId;
+				for (const result of outcome.results) {
+					if (!result.branchName) continue;
+					if (result.attemptId === winnerId) {
+						winners.push({
+							taskId: outcome.taskId,
+							branchName: result.branchName,
+							baseSha: result.baseSha,
+						});
+					} else {
+						loserBranches.push(result.branchName);
+					}
+				}
+			}
+			await this.#options.branchMerger?.discardBranches(loserBranches);
+			await this.#options.branchMerger?.mergeWinners(winners);
 			this.#options.repository.complete(
 				context.jobId,
 				results,

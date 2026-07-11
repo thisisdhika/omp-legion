@@ -6,6 +6,7 @@ import {
 	DEFAULT_EMBEDDING_SETTINGS,
 	DEFAULT_ENSEMBLE_SIZE,
 	DEFAULT_HOTL_THRESHOLDS,
+	DEFAULT_MAX_CONCURRENT_EXPERTS,
 } from "../../src/domain/constants";
 
 describe("mergeLegionConfig", () => {
@@ -15,10 +16,12 @@ describe("mergeLegionConfig", () => {
 			defaultEnsembleSize: 5,
 			hotl: { confidenceFloor: 0.8 },
 			embedding: { model: "custom-embed" },
+			maxConcurrentExperts: 8,
 		});
 
 		expect(config).toMatchObject({
 			defaultEnsembleSize: 5,
+			maxConcurrentExperts: 8,
 			modelMap: {
 				reviewer: {
 					models: ["provider/reviewer"],
@@ -46,6 +49,7 @@ describe("mergeLegionConfig", () => {
 			defaultEnsembleSize: DEFAULT_ENSEMBLE_SIZE,
 			hotl: DEFAULT_HOTL_THRESHOLDS,
 			embedding: DEFAULT_EMBEDDING_SETTINGS,
+			maxConcurrentExperts: DEFAULT_MAX_CONCURRENT_EXPERTS,
 		});
 	});
 

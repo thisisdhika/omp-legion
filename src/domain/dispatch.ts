@@ -125,6 +125,16 @@ export interface ExpertResult {
 	readonly requests: number;
 	readonly error?: string;
 	readonly aborted?: boolean;
+	/**
+	 * Set only when this attempt ran inside host isolation (branch mode) and
+	 * actually produced a commit — the not-yet-merged branch holding this
+	 * attempt's file changes, isolated from every sibling attempt's own copy
+	 * of the repo. Absent for read-only attempts (no changes to commit) and
+	 * for failed/aborted attempts.
+	 */
+	readonly branchName?: string;
+	/** Baseline commit SHA `branchName` was created from; required to merge it. */
+	readonly baseSha?: string;
 }
 
 export interface DispatchAuditData {

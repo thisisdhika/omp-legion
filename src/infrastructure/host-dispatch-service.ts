@@ -21,6 +21,7 @@ import {
 } from "../domain/constants";
 import { resolveAgentName } from "../domain/dispatch";
 import { SynthesisService } from "../domain/synthesis";
+import { HostBranchMerger } from "./branch-merger";
 import { HostEmbeddingProvider } from "./embedding-provider";
 import { HostExpertExecutor, HostJobScheduler } from "./host-dispatcher";
 import { createHostOrchestrationRepository } from "./host-orchestration-repository";
@@ -84,6 +85,8 @@ export function createHostDispatchService(
 		config,
 		defaultModel: activeModelSelector(ctx),
 		governanceThresholds: config.hotl,
+		maxConcurrentExperts: config.maxConcurrentExperts,
+		branchMerger: new HostBranchMerger({ cwd: ctx.cwd }),
 		isModelAvailable: (selector) => ctx.models.resolve(selector) !== undefined,
 		notifyEscalation: ({ jobId, taskId, decision }) => {
 			ctx.ui.notify(

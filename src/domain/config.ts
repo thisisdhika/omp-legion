@@ -5,6 +5,7 @@ import {
 	DEFAULT_EMBEDDING_SETTINGS,
 	DEFAULT_ENSEMBLE_SIZE,
 	DEFAULT_HOTL_THRESHOLDS,
+	DEFAULT_MAX_CONCURRENT_EXPERTS,
 	DEFAULT_MODEL_MAP,
 	MAX_ENSEMBLE_SIZE,
 	MIN_ENSEMBLE_SIZE,
@@ -65,6 +66,7 @@ const legionConfigInputSchema = z.object({
 		.max(MAX_ENSEMBLE_SIZE)
 		.optional(),
 	embedding: embeddingInputSchema.optional(),
+	maxConcurrentExperts: z.number().int().min(1).optional(),
 });
 
 export const legionConfigSchema = z.object({
@@ -91,6 +93,11 @@ export const legionConfigSchema = z.object({
 			model: z.string().trim().min(1),
 		})
 		.default(DEFAULT_EMBEDDING_SETTINGS),
+	maxConcurrentExperts: z
+		.number()
+		.int()
+		.min(1)
+		.default(DEFAULT_MAX_CONCURRENT_EXPERTS),
 });
 
 export type LegionConfig = z.infer<typeof legionConfigSchema>;
@@ -123,5 +130,7 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 			...DEFAULT_EMBEDDING_SETTINGS,
 			...withoutUndefined(raw.embedding),
 		},
+		maxConcurrentExperts:
+			raw.maxConcurrentExperts ?? DEFAULT_MAX_CONCURRENT_EXPERTS,
 	});
 }

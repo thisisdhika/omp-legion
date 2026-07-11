@@ -19,6 +19,10 @@
 				"type": "number",
 				"description": "Default number of expert samples per role."
 			},
+			"maxConcurrentExperts": {
+				"type": "number",
+				"description": "Max concurrent expert attempts across one dispatch, all tasks combined."
+			},
 			"hotl.confidenceFloor": {
 				"type": "number",
 				"description": "Escalate when synthesis confidence falls below this value."

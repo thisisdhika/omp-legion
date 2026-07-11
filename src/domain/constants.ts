@@ -16,6 +16,7 @@ export const LEGION_SETTING_KEYS = {
 	modelMap: "modelMap",
 	hotl: "hotl",
 	defaultEnsembleSize: "defaultEnsembleSize",
+	maxConcurrentExperts: "maxConcurrentExperts",
 	confidenceFloor: "hotl.confidenceFloor",
 	disagreementThreshold: "hotl.disagreementThreshold",
 	costCeiling: "hotl.costCeiling",
@@ -30,6 +31,15 @@ export const DEFAULT_ENSEMBLE_SIZE = 3;
 export const MIN_ENSEMBLE_SIZE = 1;
 export const DEFAULT_BENCHMARK_TIMEOUT_MS = 10 * 60_000;
 export const MAX_ENSEMBLE_SIZE = 16;
+
+/**
+ * Legion's own concurrency cap on total in-flight expert attempts per
+ * dispatch. The host's task.maxConcurrency semaphore lives only inside
+ * TaskTool, never inside the shared runSubprocess executor Legion calls
+ * directly (ADR 0002) — without this, a dispatch with several tasks times a
+ * large ensemble size would fan out every attempt at once with no limit.
+ */
+export const DEFAULT_MAX_CONCURRENT_EXPERTS = 4;
 
 export const AGGREGATOR_DISABLE_REASONING = true;
 

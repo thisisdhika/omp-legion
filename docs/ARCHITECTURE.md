@@ -217,22 +217,25 @@ zero.
 ## 4. Dispatch mechanism (`infrastructure/host-dispatcher.ts`)
 
 `HostExpertExecutor.run(execution)` looks up `execution.attempt.agent` in the
-pre-loaded agent map (§4.1) and calls `runSubprocess(...)` — **the same
-low-level executor the native `task` tool calls internally** — directly,
-never the natural-language `task` tool schema. This is deliberate (ADR 0002):
-the `task` tool's own wrapper resolves `modelOverride` once per agent name
-from session settings (`task.agentModelOverrides`), a per-session mapping
-that cannot vary per call. Legion's actual requirement — one persona, sampled
-against several different models within the same dispatch — needs a per-call
-`modelOverride`, which `ExecutorOptions` exposes and the `task` tool's wrapper
-does not.
+pre-loaded agent map (§4.1) and runs it through `runIsolatedSubprocess(...)`
+(`@oh-my-pi/pi-coding-agent/task/isolation-runner`) — a thin wrapper the host
+itself uses for both `TaskTool` and its eval `agent()` bridge, built around
+`runSubprocess(...)`, **the same low-level executor the native `task` tool
+calls internally** — never the natural-language `task` tool schema. Calling
+the executor directly (rather than through `runSubprocess` bare) is
+deliberate (ADR 0002): the `task` tool's own wrapper resolves `modelOverride`
+once per agent name from session settings (`task.agentModelOverrides`), a
+per-session mapping that cannot vary per call. Legion's actual requirement —
+one persona, sampled against several different models within the same
+dispatch — needs a per-call `modelOverride`, which `ExecutorOptions` exposes
+and the `task` tool's wrapper does not.
 
-Passed straight through to `runSubprocess`: `agent`, `task`/`assignment`,
-`context` (the parent task text), `description`, `role`, `index`, `id`,
-`parentToolCallId`, `detached: true`, `modelOverride`,
-`parentActiveModelPattern`, `sessionFile`, `persistArtifacts`,
-`artifactsDir`, `parentArtifactManager`, `modelRegistry`, `eventBus`,
-`signal`.
+Passed straight through to the executor (via `runIsolatedSubprocess`'s
+`baseOptions`): `agent`, `task`/`assignment`, `context` (the parent task
+text), `description`, `role`, `index`, `id`, `parentToolCallId`,
+`detached: true`, `modelOverride`, `parentActiveModelPattern`, `sessionFile`,
+`persistArtifacts`, `artifactsDir`, `parentArtifactManager`,
+`modelRegistry`, `eventBus`, `signal`.
 
 Because this calls the shared executor directly, Legion's experts are
 registered in the host's `AgentRegistry` (IRC roster, Agent Hub visibility)
@@ -243,6 +246,61 @@ registered in the host's `AgentRegistry` (IRC roster, Agent Hub visibility)
 label, run, { id })` — Legion's background job is registered as the same
 `"task"` job type the host's own async task runs use, so it shows up
 alongside them in whatever job-listing UI the host provides.
+
+### 4.0 Isolation and merge-back (`infrastructure/host-dispatcher.ts`, `infrastructure/branch-merger.ts`)
+
+**The gap this closes:** until this landed, every attempt ran directly
+against the real project `cwd` with no isolation — concurrent mutating
+attempts (self-consistency samples of `legion-coder`/`legion-tester`, or
+concurrent multi-task dispatch) raced on the same real files. See
+`docs/plan/algorithm-audit-and-hardening-v2.md` §1.1 for the full finding.
+
+**Mechanism:** `ExpertExecutor.prepareJob()` (called once per dispatch job,
+before any attempt runs — see `application/dispatch-service.ts`'s `#run()`)
+calls `prepareIsolationContext(cwd)`, resolving the git repo root and
+capturing a baseline (`WorktreeBaseline`) every concurrent attempt in this
+job diffs against. That opaque context threads through as each
+`ExpertExecution.jobContext`. `HostExpertExecutor.run()` then calls
+`runIsolatedSubprocess({ baseOptions, context, mergeMode: "branch", agentId: execution.attempt.id, ... })`
+per attempt: the host's own PAL backend resolver materializes a
+copy-on-write view (APFS/btrfs/zfs/reflink/overlayfs/rcopy, whichever is
+available), runs the subagent against that isolated copy, and — on success —
+commits its changes onto a not-yet-merged branch (`omp/task/<attemptId>`).
+The isolation mount is torn down immediately after (`runIsolatedSubprocess`'s
+own `finally`); the branch itself, if any, lives on independently in the
+real repo's refs until merged or discarded. The resulting `branchName`/
+`baseSha` are carried on `ExpertResult` (domain/dispatch.ts).
+
+**Winner-only merge-back:** synthesis (§5) already computes
+`AnswerCluster.representativeAttemptId` — the majority cluster's
+representative attempt — but until this phase, nothing consumed it. Now,
+once every task's synthesis and governance resolution settle (`#run()`,
+after the outcomes `Promise.all`), Legion walks each task's outcome: the
+representative attempt's branch (if any) goes into a `mergeWinners(...)`
+call; every sibling attempt's branch goes into `discardBranches(...)`. If
+the job as a whole was rejected by a human, **nothing is merged at all** —
+every branch across every task is discarded instead (`BranchMerger`,
+`application/dispatch-service.ts`). `HostBranchMerger`
+(`infrastructure/branch-merger.ts`) implements this by calling the host's
+own `mergeTaskBranches`/`cleanupTaskBranches`
+(`@oh-my-pi/pi-coding-agent/task/worktree`) — the same cherry-pick +
+conflict-stop + stash-safe machinery `TaskTool` itself uses, not a
+reinvented merge. A merge conflict throws, failing the whole dispatch job
+rather than silently landing a partial result.
+
+**Concurrency cap:** since the host's own `task.maxConcurrency` semaphore
+lives only inside `TaskTool` (never inside `runSubprocess` itself), Legion
+inherited no concurrency cap by calling the executor directly. A small pure
+`Semaphore` (`domain/concurrency.ts`) now bounds total concurrent expert
+attempts across one dispatch (all tasks combined, not per-task) —
+configurable via `maxConcurrentExperts` (default
+`DEFAULT_MAX_CONCURRENT_EXPERTS = 4`), wired into `DispatchService`'s
+constructor and wrapped around every `executor.run()` call.
+
+**Implementation status:** unit-tested (winner-only merge, full-discard on
+rejection, and concurrency-cap enforcement are all directly asserted in
+`tests/application/dispatch-service.test.ts`), but **not yet live-verified**
+against a real host session with actual concurrent mutating attempts.
 
 ### 4.1 Agent resolution — one persona, many models (`domain/dispatch.ts`, `infrastructure/agent-loader.ts`)
 
@@ -524,7 +582,8 @@ Full resolution chain, in order, for one session:
    (no role has a model until configured), `DEFAULT_HOTL_THRESHOLDS`
    (`confidenceFloor: 0.6`, `disagreementThreshold: 0.4`, `costCeiling:
    100_000`), `DEFAULT_ENSEMBLE_SIZE: 3`, `DEFAULT_EMBEDDING_SETTINGS`
-   (`baseUrl: http://127.0.0.1:11434`, `model: nomic-embed-text`).
+   (`baseUrl: http://127.0.0.1:11434`, `model: nomic-embed-text`),
+   `DEFAULT_MAX_CONCURRENT_EXPERTS: 4` (§4.0).
 2. **Project/user settings** (`infrastructure/host-config.ts`):
    `loadLegionConfig(cwd)` calls the host's `getPluginSettings("omp-legion",
    cwd)` — reads `.omp/plugin-overrides.json`'s `settings["omp-legion"]`
@@ -549,6 +608,7 @@ Full resolution chain, in order, for one session:
 | `hotl.costCeiling` | tokens | Escalate if a task's summed expert token cost exceeds this. |
 | `defaultEnsembleSize` | `1`–`16` | Ensemble size for any role without its own `ensembleSize`. |
 | `embedding.baseUrl`/`model`/`apiKey` | strings | Ollama fallback tier settings (registry/Mnemopi tiers use the host's own model resolution instead). |
+| `maxConcurrentExperts` | `≥1` | Caps total concurrent expert attempts per dispatch, all tasks combined (§4.0) — the host's own concurrency cap doesn't cover Legion's direct-executor calls. |
 
 `mergeLegionConfig` (`domain/config.ts`) is where every default actually
 applies. One real bug lived here: Zod's `.default()` only fires when a key
@@ -617,14 +677,18 @@ name — same discovery mechanism the host uses for every other agent
 - **Domain** (`tests/domain/*.test.ts`): every pure function
   (`buildDispatchPlan`, `resolveAgentName`, `humanReadableJobId`,
   `evaluateGovernance`, `clusterExpertAnswers`, config merging,
-  decomposition parsing/fallback) is tested with zero host dependencies —
-  this is the whole point of the DDD layering (ADR 0001).
+  decomposition parsing/fallback, the `Semaphore` concurrency primitive) is
+  tested with zero host dependencies — this is the whole point of the DDD
+  layering (ADR 0001).
 - **Application** (`tests/application/*.test.ts`): `DispatchService`
   exercised against hand-written `ExpertExecutor`/`JobScheduler`/
-  `OrchestrationRepository`/`SynthesisRunner` doubles — covers the full
-  dispatch→decompose→synthesize→govern→persist flow including escalation,
-  human decisions, and rejection-fails-the-job behavior, without any real
-  host SDK import.
+  `OrchestrationRepository`/`SynthesisRunner`/`BranchMerger` doubles — covers
+  the full dispatch→decompose→synthesize→govern→persist flow including
+  escalation, human decisions, rejection-fails-the-job behavior, the
+  concurrency cap actually bounding overlap, and winner-only branch
+  merge-back (only the synthesis-selected attempt's branch merges; every
+  sibling is discarded; a rejected job discards everything), without any
+  real host SDK import.
 - **Infrastructure** (`tests/infrastructure/*.test.ts`): adapters tested
   against minimal fakes of the host surfaces they wrap (`agent-loader`,
   `task-tool-guard`, `embedding-provider`'s fallback ordering,
