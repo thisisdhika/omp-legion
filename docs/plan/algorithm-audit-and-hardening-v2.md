@@ -43,6 +43,21 @@ Concretely: dispatch 3 attempts, 2 crash/timeout, 1 succeeds. `answerCandidates`
 
 Same function, diverse branch: `selection.models[index % selection.models.length]`. If `ensembleSize < models.length` (e.g. `ensembleSize: 2` against `models: [A, B, C]`), only `A` and `B` ever get used — `C` is configured but never dispatched, silently, with no warning that part of the configured diversity was unreachable at this ensemble size.
 
+### 1.6b CORRECTED — temperature/seed control is NOT host-blocked; it's a real, unused hook
+
+Part 2/Phase 6 originally called this "partially host-blocked" based on `ExecutorOptions` having no dedicated `temperature` field. That was too narrow — traced the full path and it's directly usable:
+
+- `ExecutorOptions.settings?: Settings` (`executor.ts:363`) — a full `Settings` object the caller may supply per spawn.
+- `runSubprocess` uses it as the base: `const settings = options.settings ?? Settings.isolated();` (`executor.ts:2042`), snapshotted into the subagent's own session settings via `createSubagentSettings`.
+- The host settings schema has a real `temperature` key (`config/settings-schema.ts:1129`; `-1` = provider default, `0` = deterministic, up to `1` = max variety).
+- That setting is read and passed straight into the model completion call: `temperature: settings.get("temperature") >= 0 ? settings.get("temperature") : undefined` (`sdk.ts:2749`).
+
+So a distinct `Settings.isolated({ temperature: X })` passed as `ExecutorOptions.settings` on one specific `runSubprocess` call reaches that attempt's actual model completion, end to end. **Also found in the same trace:** `HostExpertExecutor.run()` currently passes no `settings` at all, so every dispatched expert already falls back to a blank `Settings.isolated()` — every spawn is silently discarding whatever session-level settings existed, not just missing temperature control specifically.
+
+**Design:** add `temperature` to `DispatchAttempt` (`domain/dispatch.ts`), computed in `modelsForAttempts` alongside `model`. For **self-consistency** attempts, apply a small default ladder (e.g. `[0.2, 0.6, 1.0]`, cycling by attempt index) — this is exactly the sampling diversity the Self-MoA thesis (arXiv 2502.00674, already cited in the spec) assumes exists; today it's whatever the provider defaults to, unverified. For **diverse** strategy, leave provider-default (model diversity already provides decorrelation there) unless explicitly configured. Expose an optional `temperatureLadder: number[]` on `RoleModelPolicy` for explicit control, falling back to the smart default ladder otherwise. Thread through `HostExpertExecutor.run()` as `Settings.isolated({ temperature: execution.attempt.temperature })`.
+
+This upgrades former Phase 6 from "investigate, possibly blocked" to a confirmed, scoped, implementable phase — see Part 3 below.
+
 ### 1.7 NEW — all-experts-failed is an uncaught throw (carried/confirmed from v1)
 
 `clusterExpertAnswers` throws `"Cannot cluster expert results without output"` when every expert for a task fails. Nothing in `DispatchService.#run`'s per-task mapper catches this (only `executor.run()` errors are caught, via `failedResult` — not `synthesizer.synthesize`). The throw propagates through the outer `Promise.all`, failing the *entire* multi-task dispatch and discarding any sibling tasks that succeeded.
@@ -117,8 +132,10 @@ Phases are in dependency order — each assumes the previous has landed.
 ### Phase 5 — Robustness (independent, low-effort, can land anytime)
 1. Wrap `synthesizer.synthesize(...)` per-task so an all-experts-failed task produces a per-task failure result instead of an uncaught throw that kills sibling tasks.
 
-### Phase 6 — Diversity / sampling control (lower priority, partially host-blocked)
-1. Investigate whether any per-call sampling control (temperature/seed) is reachable at all through the host's completion path; if genuinely blocked, document as a known limitation rather than an implicit assumption.
+### Phase 6 — Diversity / sampling control (confirmed implementable — see §1.6b)
+1. Add `temperature` (and optionally `temperatureLadder` override on `RoleModelPolicy`) to the domain schema; compute per-attempt in `modelsForAttempts` — default ladder for self-consistency attempts, provider-default for diverse attempts unless configured.
+2. Thread it through `HostExpertExecutor.run()` via `Settings.isolated({ temperature: execution.attempt.temperature })` passed as `ExecutorOptions.settings`.
+3. While touching this: stop discarding session settings entirely on every spawn (currently no `settings` is passed at all) — construct the isolated settings object deliberately instead of relying on the host's blank-default fallback.
 
 ### Not committed — flagged for later consideration
 - Multi-agent debate / critique round (§2.2) — evidenced, but should follow Phases 1-3 so there's a stable foundation (isolation + a trustworthy confidence signal) to layer it on.
