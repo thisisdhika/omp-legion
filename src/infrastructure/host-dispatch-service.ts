@@ -20,7 +20,7 @@ import {
 import { SynthesisService } from "../domain/synthesis";
 import { HostEmbeddingProvider } from "./embedding-provider";
 import { HostExpertExecutor, HostJobScheduler } from "./host-dispatcher";
-import { InMemoryOrchestrationRepository } from "./in-memory-orchestration-repository";
+import { createHostOrchestrationRepository } from "./host-orchestration-repository";
 import { HostLlmAggregator } from "./llm-aggregator";
 import { HostLlmDecomposer } from "./llm-decomposer";
 
@@ -63,7 +63,7 @@ export function createHostDispatchService(
 				cwd: ctx.cwd,
 			}),
 		}),
-		repository: new InMemoryOrchestrationRepository(),
+		repository: createHostOrchestrationRepository(ctx.sessionManager),
 		decomposer: new HostLlmDecomposer({
 			model,
 			modelRegistry: ctx.modelRegistry,

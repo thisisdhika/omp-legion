@@ -4,30 +4,7 @@ import type {
 	ExpertResult,
 	OrchestrationRepository,
 } from "../domain/dispatch";
-
-function cloneRecord(record: DispatchRecord): DispatchRecord {
-	return {
-		...record,
-		attempts: record.attempts.map((attempt) => ({ ...attempt })),
-		results: record.results?.map((result) => ({ ...result })),
-		syntheses: record.syntheses?.map((synthesis) => ({
-			...synthesis,
-			clusters: synthesis.clusters.map((cluster) => ({
-				...cluster,
-				attemptIds: [...cluster.attemptIds],
-			})),
-		})),
-		governance: record.governance?.map((decision) => ({
-			...decision,
-			reasons: [...decision.reasons],
-			metrics: { ...decision.metrics },
-			thresholds: { ...decision.thresholds },
-		})),
-		resolutions: record.resolutions?.map((resolution) => ({
-			...resolution,
-		})),
-	};
-}
+import { cloneDispatchRecord } from "./orchestration-record";
 
 export class InMemoryOrchestrationRepository
 	implements OrchestrationRepository
@@ -37,7 +14,7 @@ export class InMemoryOrchestrationRepository
 	create(record: DispatchRecord): void {
 		if (this.#records.has(record.id))
 			throw new Error(`Orchestration ${record.id} already exists.`);
-		this.#records.set(record.id, cloneRecord(record));
+		this.#records.set(record.id, cloneDispatchRecord(record));
 	}
 
 	complete(
@@ -52,7 +29,7 @@ export class InMemoryOrchestrationRepository
 		if (!record) throw new Error(`Orchestration ${id} was not found.`);
 		this.#records.set(
 			id,
-			cloneRecord({
+			cloneDispatchRecord({
 				...record,
 				state: "completed",
 				completedAt,
@@ -74,7 +51,7 @@ export class InMemoryOrchestrationRepository
 		if (!record) throw new Error(`Orchestration ${id} was not found.`);
 		this.#records.set(
 			id,
-			cloneRecord({
+			cloneDispatchRecord({
 				...record,
 				state: "failed",
 				completedAt,
@@ -86,6 +63,6 @@ export class InMemoryOrchestrationRepository
 
 	get(id: string): DispatchRecord | undefined {
 		const record = this.#records.get(id);
-		return record ? cloneRecord(record) : undefined;
+		return record ? cloneDispatchRecord(record) : undefined;
 	}
 }
