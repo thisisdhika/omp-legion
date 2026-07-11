@@ -3,6 +3,7 @@ import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent/extensibility/ext
 
 import type { DispatchService } from "../application/dispatch-service";
 import { dispatchRequestSchema } from "../domain/dispatch";
+import { renderDispatchCall, renderDispatchResult } from "./dispatch-card";
 
 export interface LegionDispatchDetails {
 	readonly jobId: string;
@@ -83,5 +84,8 @@ export function createDispatchTool(
 				};
 			}
 		},
+		renderCall: (args, _options, theme) => renderDispatchCall(args, theme),
+		renderResult: (result, _options, theme) =>
+			renderDispatchResult(result, theme),
 	};
 }
