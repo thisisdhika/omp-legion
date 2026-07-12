@@ -412,6 +412,7 @@ describe("DispatchService", () => {
 				confidenceFloor: 0.8,
 				disagreementThreshold: 0.4,
 				costCeiling: 100,
+				failureRateCeiling: 0.5,
 			},
 			notifyEscalation: () => {
 				notifications += 1;
@@ -538,6 +539,172 @@ describe("DispatchService", () => {
 		expect(verifiedFlags).toEqual([true, false, false]);
 	});
 
+	test("computes governance cost as mean tokens per attempt, not a dispatch-wide sum", async () => {
+		class FixedTokenExecutor implements ExpertExecutor {
+			async run(execution: ExpertExecution): Promise<ExpertResult> {
+				return {
+					attemptId: execution.attempt.id,
+					taskId: execution.attempt.taskId,
+					agent: execution.attempt.agent,
+					role: execution.attempt.role,
+					model: execution.attempt.model,
+					index: execution.attempt.index,
+					output: "ok",
+					stderr: "",
+					exitCode: 0,
+					durationMs: 1,
+					tokens: 40,
+					requests: 1,
+				};
+			}
+		}
+
+		const scheduler = new DeferredScheduler();
+		let escalated = false;
+		const service = new DispatchService({
+			scheduler,
+			executor: new FixedTokenExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0,
+				disagreementThreshold: 1,
+				failureRateCeiling: 1,
+				// Between the true mean (40) and what a flat sum across 5
+				// attempts would have been (200) — only escalates if cost is
+				// still (wrongly) computed as a sum.
+				costCeiling: 50,
+			},
+			notifyEscalation: () => {
+				escalated = true;
+			},
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 5,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		expect(escalated).toBe(false);
+	});
+
+	test("escalates on failure rate even when the lone survivor reports maximum confidence", async () => {
+		class MixedOutcomeExecutor implements ExpertExecutor {
+			async run(execution: ExpertExecution): Promise<ExpertResult> {
+				if (execution.attempt.index > 0) {
+					throw new Error("subagent crashed");
+				}
+				return {
+					attemptId: execution.attempt.id,
+					taskId: execution.attempt.taskId,
+					agent: execution.attempt.agent,
+					role: execution.attempt.role,
+					model: execution.attempt.model,
+					index: execution.attempt.index,
+					output: "the one survivor's answer",
+					stderr: "",
+					exitCode: 0,
+					durationMs: 1,
+					tokens: 1,
+					requests: 1,
+				};
+			}
+		}
+
+		const scheduler = new DeferredScheduler();
+		let escalationReasons: readonly string[] = [];
+		const service = new DispatchService({
+			scheduler,
+			executor: new MixedOutcomeExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0,
+				disagreementThreshold: 1,
+				costCeiling: 1_000_000,
+				failureRateCeiling: 0.5,
+			},
+			notifyEscalation: (notice) => {
+				escalationReasons = notice.decision.reasons;
+			},
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 3,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await expect(job(context())).rejects.toThrow();
+
+		// 2 of 3 attempts crashed -- RecordingSynthesizer would otherwise report
+		// confidence 0.75 (its fixed stub value) regardless, so only the
+		// independently-computed failureRate metric catches this.
+		expect(escalationReasons).toContain("failureRate");
+	});
+
+	test("auto-resolves an escalation to reject once the decision timeout elapses", async () => {
+		const scheduler = new DeferredScheduler();
+		const service = new DispatchService({
+			scheduler,
+			executor: new RecordingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0.8,
+				disagreementThreshold: 0.4,
+				costCeiling: 100,
+				failureRateCeiling: 0.5,
+			},
+			decisionTimeoutMs: 20,
+			decisionGate: () => new Promise(() => {}), // never resolves on its own
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+
+		await expect(job(context())).rejects.toThrow(/rejected/);
+	});
+
 	test("caps total concurrent expert attempts at maxConcurrentExperts", async () => {
 		let inFlight = 0;
 		let maxObserved = 0;
@@ -611,6 +778,7 @@ describe("DispatchService", () => {
 				confidenceFloor: 0.8,
 				disagreementThreshold: 0.4,
 				costCeiling: 100,
+				failureRateCeiling: 0.5,
 			},
 			decisionGate: async () => ({ action: "reject" }),
 		});

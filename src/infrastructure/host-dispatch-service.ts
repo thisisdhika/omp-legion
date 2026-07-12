@@ -86,6 +86,7 @@ export function createHostDispatchService(
 		config,
 		defaultModel: activeModelSelector(ctx),
 		governanceThresholds: config.hotl,
+		decisionTimeoutMs: config.decisionTimeoutMs,
 		maxConcurrentExperts: config.maxConcurrentExperts,
 		branchMerger: new HostBranchMerger({ cwd: ctx.cwd }),
 		verifier: config.verifyCommand

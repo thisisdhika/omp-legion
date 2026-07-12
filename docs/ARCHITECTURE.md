@@ -595,10 +595,72 @@ the error message as the tree's final leaf, styled via `theme.fg?.("error",
 ## 7. HOTL governance — async, never blocking (`domain/governance.ts`, `host-dispatch-service.ts`)
 
 `evaluateGovernance({ metrics, thresholds })` is pure: it checks
-`confidence < confidenceFloor`, `disagreement > disagreementThreshold`, and
-`cost > costCeiling` (cost = summed `tokens` across a task's expert results,
-`expertCost`), producing a `GovernanceDecision` with every threshold crossed
-listed in `reasons` (not just the first).
+`confidence < confidenceFloor`, `disagreement > disagreementThreshold`,
+`cost > costCeiling`, and `failureRate > failureRateCeiling`, producing a
+`GovernanceDecision` with every threshold crossed listed in `reasons` (not
+just the first).
+
+### 7.0 Four independent metrics, not two redundant ones (Phase 3 recalibration)
+
+An earlier version of this section (and the code) had `disagreement := 1 -
+confidence` — a hard mathematical identity, not a second measurement. At the
+original default thresholds (`confidenceFloor: 0.6`, `disagreementThreshold:
+0.4`, summing to exactly 1.0) the two checks always co-fired: one weak
+signal double-counted as two, not two corroborating ones (see
+`docs/plan/algorithm-audit-and-hardening-v2.md` §1.2). Recalibrated:
+
+- **`disagreement`** (`domain/synthesis.ts`'s `fragmentationDisagreement`) is
+  now `(clusterCount - 1) / (answerCount - 1)` — how many distinct answers
+  emerged, not how dominant the top one is. A lone dissenter at the default
+  ensemble size of 3 measures 0.5 (comfortably under the new
+  `DEFAULT_DISAGREEMENT_THRESHOLD = 0.75`); a full 3-way split measures 1.0.
+  `confidence` still measures the top cluster's dominance — the two are now
+  genuinely different lenses (one asks "how strong is the majority," the
+  other "how many competing answers exist") rather than restatements of the
+  same number.
+- **`failureRate`** (`GovernanceThresholds.failureRateCeiling`, default 0.5)
+  is the audit's headline fix (§1.3 of the plan doc): `confidence` is
+  computed only over experts that produced an answer — failed/aborted
+  attempts are filtered out *before* clustering, so a task where 2 of 3
+  experts crashed and 1 survived reports **confidence 1.0**, the single
+  worst-case outcome for an ensemble reading as maximum confidence.
+  `attemptFailureRate` (`application/dispatch-service.ts`) computes this
+  directly from the raw attempt results, independent of what synthesis saw,
+  so that scenario can no longer hide.
+- **`cost`** (`expertCost`) is now the **mean** tokens per attempt, not a
+  dispatch-wide sum. A flat sum scaled mechanically with `ensembleSize` — 3
+  real coding subagents at ~20-30k tokens each (live-tested this session)
+  already sit near the old 100k sum ceiling regardless of whether anything
+  was actually wrong, and a larger ensemble would only make that worse. The
+  mean is scale-invariant; `DEFAULT_COST_CEILING` was recalibrated from
+  `100_000` (a sum-shaped number) to `50_000` (a per-attempt one).
+- **Decision-gate timeout**: `decisionGate` used to await indefinitely — no
+  auto-resolve, ever. `#resolveEscalation` now *races* the decision against
+  `AbortSignal.any([signal, AbortSignal.timeout(decisionTimeoutMs)])`
+  (default 30 minutes, `decisionTimeoutMs` config) at its own level, not
+  merely passing the combined signal down and trusting the callee to honor
+  it — a `decisionGate` that ignores its signal entirely (a bug, or a test
+  double) would otherwise hang the job, and every other job queued behind
+  the same concurrency slot, forever. A timeout resolves to reject with
+  `HOTL_DECISION_TIMEOUT_MESSAGE`, distinct from the existing headless
+  `HOTL_NO_DECISION_PROVIDER_MESSAGE` fail-safe.
+
+**Known, accepted limitation — per-task delivery is still all-or-nothing.**
+The plan flagged "decouple per-task delivery from `Promise.all` batching" as
+a goal; investigating the host's `AsyncJobManager` (`async/job-manager.ts`)
+confirmed its delivery model is genuinely one-job-one-final-text
+(`onJobComplete(jobId, text)`, delivered exactly once) — `reportProgress` is
+a separate, non-final live-update channel, not a per-unit "deliver this
+now" mechanism. Decoupling delivery for real would mean registering a
+separate async job per task instead of one per dispatch — a materially
+different tool contract (multiple job ids returned from one
+`legion_dispatch` call, a different rendered card shape) that ADR 0002's
+"don't reinvent the host" principle argues against forcing through for one
+phase. Instead: the per-task `reportProgress` call now carries the actual
+synthesis `answer` text, not just metadata — a human watching progress
+already sees a finished, non-escalated task's real answer immediately, even
+while a sibling task in the same dispatch is still waiting on a human
+decision. The tool's final "job complete" delivery remains all-or-nothing.
 
 **This is Human-**on**-the-Loop, not Human-in-the-Loop, by construction:**
 `legion_dispatch` already returned its job id before any governance check
@@ -657,13 +719,15 @@ Full resolution chain, in order, for one session:
 | `modelMap.<role>.models` | `string[]` | Models available to that role, e.g. `["anthropic/claude-fable-5"]`. |
 | `modelMap.<role>.strategy` | `"self-consistency" \| "diverse"` | `self-consistency` (default): every attempt samples the *first* listed model N times. `diverse`: attempts cycle round-robin through the full model list. |
 | `modelMap.<role>.ensembleSize` | `1`–`16` | Attempts for that role; falls back to `defaultEnsembleSize`. |
-| `hotl.confidenceFloor` | `0`–`1` | Escalate if synthesis confidence falls below this. |
-| `hotl.disagreementThreshold` | `0`–`1` | Escalate if disagreement exceeds this. |
-| `hotl.costCeiling` | tokens | Escalate if a task's summed expert token cost exceeds this. |
+| `hotl.confidenceFloor` | `0`–`1` | Escalate if synthesis confidence (top cluster's dominance) falls below this. |
+| `hotl.disagreementThreshold` | `0`–`1` | Escalate if fragmentation (§7.0 — distinct-answer count, not `1 - confidence`) exceeds this. |
+| `hotl.costCeiling` | tokens | Escalate if a task's **mean** tokens per attempt exceeds this (§7.0 — not a sum). |
+| `hotl.failureRateCeiling` | `0`–`1` | Escalate if the fraction of attempts that failed/aborted outright exceeds this, independent of confidence (§7.0). |
 | `defaultEnsembleSize` | `1`–`16` | Ensemble size for any role without its own `ensembleSize`. |
 | `embedding.baseUrl`/`model`/`apiKey` | strings | Ollama fallback tier settings (registry/Mnemopi tiers use the host's own model resolution instead). |
 | `maxConcurrentExperts` | `≥1` | Caps total concurrent expert attempts per dispatch, all tasks combined (§4.0) — the host's own concurrency cap doesn't cover Legion's direct-executor calls. |
 | `verifyCommand` | string | Shell command re-run against each code-mutating attempt's isolated branch for execution-grounded consensus (§5.2), e.g. `"bun test"`. Off by default. |
+| `decisionTimeoutMs` | ms | How long a HOTL escalation waits for a human before auto-resolving to reject (§7.0). Default 30 minutes. |
 
 `mergeLegionConfig` (`domain/config.ts`) is where every default actually
 applies. One real bug lived here: Zod's `.default()` only fires when a key

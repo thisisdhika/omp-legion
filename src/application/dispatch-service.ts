@@ -1,11 +1,13 @@
 import { Semaphore } from "../domain/concurrency";
 import type { LegionConfig } from "../domain/config";
 import {
+	DEFAULT_DECISION_TIMEOUT_MS,
 	DEFAULT_ENSEMBLE_SIZE,
 	DEFAULT_MAX_CONCURRENT_EXPERTS,
 	HOTL_DECISION_APPROVE,
 	HOTL_DECISION_EDIT,
 	HOTL_DECISION_REJECT,
+	HOTL_DECISION_TIMEOUT_MESSAGE,
 	HOTL_EMPTY_EDIT_MESSAGE,
 	HOTL_NO_DECISION_PROVIDER_MESSAGE,
 	LEGION_DISPATCH_JOB_LABEL,
@@ -152,6 +154,8 @@ export interface DispatchServiceOptions {
 	readonly branchMerger?: BranchMerger;
 	/** Omit when no `verifyCommand` is configured — execution-grounded verification simply doesn't run. */
 	readonly verifier?: Verifier;
+	/** How long an escalation waits for a human before auto-resolving to reject. Defaults to DEFAULT_DECISION_TIMEOUT_MS. */
+	readonly decisionTimeoutMs?: number;
 }
 
 export interface TaskAttemptSummary {
@@ -234,8 +238,32 @@ interface TaskDispatchOutcome {
 	readonly resolution?: GovernanceResolution;
 }
 
+/**
+ * Mean tokens per attempt, not a dispatch-wide sum. A flat sum against
+ * costCeiling scales mechanically with ensembleSize — a larger, perfectly
+ * healthy ensemble would trip the same absolute ceiling a smaller one never
+ * would, for no reason related to actual cost per unit of work. The mean is
+ * scale-invariant regardless of how many attempts were configured.
+ */
 function expertCost(results: readonly ExpertResult[]): number {
-	return results.reduce((total, result) => total + result.tokens, 0);
+	if (results.length === 0) return 0;
+	const total = results.reduce((sum, result) => sum + result.tokens, 0);
+	return total / results.length;
+}
+
+/**
+ * Read directly off the raw attempt results, independent of what synthesis
+ * saw — confidence is computed only over experts that produced an answer
+ * (empty/failed output is filtered out before clustering), so a task where
+ * most experts crashed and one survived would otherwise report maximum
+ * confidence. See GovernanceThresholds.failureRateCeiling.
+ */
+function attemptFailureRate(results: readonly ExpertResult[]): number {
+	if (results.length === 0) return 0;
+	const failed = results.filter(
+		(result) => result.exitCode !== 0 || result.aborted === true,
+	).length;
+	return failed / results.length;
 }
 
 function normalizeHumanDecision(
@@ -396,14 +424,50 @@ export class DispatchService {
 		return { ...request, tasks: [...fallbackDecomposition(request.task)] };
 	}
 
+	/**
+	 * Never waits forever — genuinely races the decision against a timeout at
+	 * this level, rather than only passing an abort signal down and trusting
+	 * the callee to honor it. A `decisionGate` that ignores its signal (a
+	 * test double, or a real implementation with a bug) would otherwise hang
+	 * this job — and every other job queued behind a shared concurrency slot
+	 * — forever. Cooperative implementations still get the combined signal so
+	 * they can cancel their own underlying UI call cleanly.
+	 */
 	async #resolveEscalation(
 		notice: EscalationNotice,
 		signal: AbortSignal,
 	): Promise<GovernanceResolution> {
-		const decision = this.#options.decisionGate
-			? await this.#options.decisionGate(notice, signal)
-			: undefined;
-		return normalizeHumanDecision(notice.taskId, decision);
+		if (!this.#options.decisionGate)
+			return normalizeHumanDecision(notice.taskId, undefined);
+		const timeoutMs =
+			this.#options.decisionTimeoutMs ?? DEFAULT_DECISION_TIMEOUT_MS;
+		const combinedSignal = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(timeoutMs),
+		]);
+		const timedOut = new Promise<undefined>((resolve) => {
+			if (combinedSignal.aborted) {
+				resolve(undefined);
+				return;
+			}
+			combinedSignal.addEventListener("abort", () => resolve(undefined), {
+				once: true,
+			});
+		});
+		try {
+			const decision = await Promise.race([
+				this.#options.decisionGate(notice, combinedSignal),
+				timedOut,
+			]);
+			if (!decision) throw new Error(HOTL_DECISION_TIMEOUT_MESSAGE);
+			return normalizeHumanDecision(notice.taskId, decision);
+		} catch {
+			return {
+				taskId: notice.taskId,
+				action: HOTL_DECISION_REJECT,
+				note: HOTL_DECISION_TIMEOUT_MESSAGE,
+			};
+		}
 	}
 
 	/**
@@ -507,6 +571,7 @@ export class DispatchService {
 							confidence: synthesis.confidence,
 							disagreement: synthesis.disagreement,
 							cost: expertCost(verifiedResults),
+							failureRate: attemptFailureRate(verifiedResults),
 						},
 						thresholds: this.#options.governanceThresholds,
 					});
@@ -532,6 +597,13 @@ export class DispatchService {
 							});
 						}
 					}
+					// The host's AsyncJobManager delivers one final text per job, once,
+					// on completion — there is no per-unit "deliver this now" channel
+					// (see docs/plan/algorithm-audit-and-hardening-v2.md Phase 3). So a
+					// task that finishes early cannot be delivered independently of a
+					// sibling task still awaiting a human decision — but its answer can
+					// still be surfaced right now, via progress, rather than making a
+					// human wait on the slowest task before seeing anything at all.
 					await context.reportProgress(`Legion synthesized task ${taskId}.`, {
 						taskId,
 						confidence: finalSynthesis.confidence,
@@ -539,6 +611,7 @@ export class DispatchService {
 						clusteringMethod: finalSynthesis.clusteringMethod,
 						escalated: governance.shouldEscalate,
 						humanDecision: resolution?.action,
+						answer: finalSynthesis.answer,
 					});
 					return {
 						taskId,

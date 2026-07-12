@@ -18,9 +18,11 @@ export const LEGION_SETTING_KEYS = {
 	defaultEnsembleSize: "defaultEnsembleSize",
 	maxConcurrentExperts: "maxConcurrentExperts",
 	verifyCommand: "verifyCommand",
+	decisionTimeoutMs: "decisionTimeoutMs",
 	confidenceFloor: "hotl.confidenceFloor",
 	disagreementThreshold: "hotl.disagreementThreshold",
 	costCeiling: "hotl.costCeiling",
+	failureRateCeiling: "hotl.failureRateCeiling",
 	embedding: "embedding",
 	embeddingBaseUrl: "embed.baseUrl",
 	embeddingApiKey: "embed.apiKey",
@@ -55,13 +57,34 @@ export const DEFAULT_EMBEDDING_SETTINGS = {
 } as const;
 
 export const DEFAULT_CONFIDENCE_FLOOR = 0.6;
-export const DEFAULT_DISAGREEMENT_THRESHOLD = 0.4;
-export const DEFAULT_COST_CEILING = 100_000;
+/**
+ * Under the fragmentation-based disagreement metric (domain/synthesis.ts's
+ * fragmentationDisagreement — clusterCount-1 / answerCount-1, no longer
+ * `1 - confidence`), 0.75 means "escalate only once genuine scatter shows up
+ * (multiple distinct answers), not merely because one attempt dissented from
+ * an otherwise-clear majority" — a lone dissenter at the default ensemble
+ * size of 3 measures 0.5, comfortably under this floor; a full 3-way split
+ * measures 1.0, well over it.
+ */
+export const DEFAULT_DISAGREEMENT_THRESHOLD = 0.75;
+/**
+ * A per-attempt mean, not a dispatch-wide sum (application/dispatch-service.ts's
+ * expertCost averages, it no longer totals). A flat sum scaled mechanically
+ * with ensembleSize — 3 real coding subagents at ~20-30k tokens each (live-
+ * tested this session) already sit near a 100k sum ceiling regardless of
+ * whether anything was actually wrong, and a larger ensembleSize would only
+ * make that worse. 50k as a per-attempt figure gives headroom above typical
+ * observed cost while still catching a genuinely runaway attempt.
+ */
+export const DEFAULT_COST_CEILING = 50_000;
+/** Escalate once more than half of a task's attempts failed/aborted outright — see GovernanceThresholds.failureRateCeiling. */
+export const DEFAULT_FAILURE_RATE_CEILING = 0.5;
 
 export const DEFAULT_HOTL_THRESHOLDS = {
 	confidenceFloor: DEFAULT_CONFIDENCE_FLOOR,
 	disagreementThreshold: DEFAULT_DISAGREEMENT_THRESHOLD,
 	costCeiling: DEFAULT_COST_CEILING,
+	failureRateCeiling: DEFAULT_FAILURE_RATE_CEILING,
 } as const;
 
 export const HOTL_DECISION_APPROVE = "approve" as const;
@@ -79,3 +102,7 @@ export const HOTL_NO_DECISION_PROVIDER_MESSAGE =
 	"No human decision provider is available for this escalation.";
 export const HOTL_EMPTY_EDIT_MESSAGE =
 	"An edit decision requires a non-empty note.";
+export const HOTL_DECISION_TIMEOUT_MESSAGE =
+	"No human responded before the decision timeout elapsed.";
+/** 30 minutes — long enough for a human to actually notice and respond, short enough that a job never waits forever. */
+export const DEFAULT_DECISION_TIMEOUT_MS = 30 * 60_000;

@@ -45,6 +45,7 @@ export function parseLegionPluginSettings(
 		defaultEnsembleSize: settings[LEGION_SETTING_KEYS.defaultEnsembleSize],
 		maxConcurrentExperts: settings[LEGION_SETTING_KEYS.maxConcurrentExperts],
 		verifyCommand: settings[LEGION_SETTING_KEYS.verifyCommand],
+		decisionTimeoutMs: settings[LEGION_SETTING_KEYS.decisionTimeoutMs],
 		hotl: {
 			...hotl,
 			confidenceFloor:
@@ -54,6 +55,9 @@ export function parseLegionPluginSettings(
 				hotl.disagreementThreshold,
 			costCeiling:
 				settings[LEGION_SETTING_KEYS.costCeiling] ?? hotl.costCeiling,
+			failureRateCeiling:
+				settings[LEGION_SETTING_KEYS.failureRateCeiling] ??
+				hotl.failureRateCeiling,
 		},
 		embedding: {
 			...embedding,

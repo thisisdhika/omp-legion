@@ -17,12 +17,14 @@
 			},
 			"hotl": {
 				"confidenceFloor": 0.6,
-				"disagreementThreshold": 0.4,
-				"costCeiling": 100000
+				"disagreementThreshold": 0.75,
+				"costCeiling": 50000,
+				"failureRateCeiling": 0.5
 			},
 			"defaultEnsembleSize": 3,
 			"maxConcurrentExperts": 4,
 			"verifyCommand": "bun test",
+			"decisionTimeoutMs": 1800000,
 			"embedding": {
 				"baseUrl": "http://127.0.0.1:11434",
 				"model": "nomic-embed-text"

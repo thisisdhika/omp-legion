@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+	DEFAULT_DECISION_TIMEOUT_MS,
 	DEFAULT_DISPATCH_STRATEGY,
 	DEFAULT_EMBEDDING_SETTINGS,
 	DEFAULT_ENSEMBLE_SIZE,
@@ -48,6 +49,7 @@ const hotlThresholdInputSchema = z.object({
 	confidenceFloor: z.number().min(0).max(1).optional(),
 	disagreementThreshold: z.number().min(0).max(1).optional(),
 	costCeiling: z.number().nonnegative().optional(),
+	failureRateCeiling: z.number().min(0).max(1).optional(),
 });
 
 const embeddingInputSchema = z.object({
@@ -68,6 +70,7 @@ const legionConfigInputSchema = z.object({
 	embedding: embeddingInputSchema.optional(),
 	maxConcurrentExperts: z.number().int().min(1).optional(),
 	verifyCommand: z.string().trim().min(1).optional(),
+	decisionTimeoutMs: z.number().int().min(1).optional(),
 });
 
 export const legionConfigSchema = z.object({
@@ -79,6 +82,7 @@ export const legionConfigSchema = z.object({
 			confidenceFloor: z.number().min(0).max(1),
 			disagreementThreshold: z.number().min(0).max(1),
 			costCeiling: z.number().nonnegative(),
+			failureRateCeiling: z.number().min(0).max(1),
 		})
 		.default(DEFAULT_HOTL_THRESHOLDS),
 	defaultEnsembleSize: z
@@ -106,6 +110,12 @@ export const legionConfigSchema = z.object({
 	 * beyond what an expert attempt itself ran.
 	 */
 	verifyCommand: z.string().trim().min(1).optional(),
+	/** How long a HOTL escalation waits for a human before auto-resolving to reject. Never waits forever. */
+	decisionTimeoutMs: z
+		.number()
+		.int()
+		.min(1)
+		.default(DEFAULT_DECISION_TIMEOUT_MS),
 });
 
 export type LegionConfig = z.infer<typeof legionConfigSchema>;
@@ -141,5 +151,6 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 		maxConcurrentExperts:
 			raw.maxConcurrentExperts ?? DEFAULT_MAX_CONCURRENT_EXPERTS,
 		verifyCommand: raw.verifyCommand,
+		decisionTimeoutMs: raw.decisionTimeoutMs ?? DEFAULT_DECISION_TIMEOUT_MS,
 	});
 }

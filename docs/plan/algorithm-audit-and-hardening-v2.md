@@ -120,12 +120,13 @@ Phases are in dependency order — each assumes the previous has landed.
 4. `legion-reviewer` (prose-only, no patch to execute) stays on the existing embedding/Rouge-L clustering — no change there. **Confirmed: read-only roles never produce a branch, so verification naturally never applies to them.**
 
 ### Phase 3 — Governance recalibration (redo against the stronger signal from Phase 2 where applicable)
-1. Replace the redundant confidence/disagreement pair with one real signal, or explicitly decouple them.
-2. Add a genuine failure-rate metric to `GovernanceMetrics` so a "1 of 3 experts survived" dispatch cannot report maximum confidence (§1.3) regardless of what the survivor said.
-3. Scale `costCeiling` by `ensembleSize` instead of one flat global number.
-4. Add a decision-gate timeout with a documented fail-safe default (reject).
-5. Decouple per-task delivery from `Promise.all` batching.
-6. Empirically re-tune clustering thresholds against real expert-output pairs (extend `scripts/benchmark.ts` to log cluster-merge decisions for both the text-based and execution-based paths).
+**Status: implemented (items 1-4), item 5 investigated and documented as a known host constraint rather than forced through, item 6 deferred to live verification. Unit-tested, not yet live-verified.**
+1. ~~Replace the redundant confidence/disagreement pair with one real signal, or explicitly decouple them.~~ **Done**: `disagreement` is now `fragmentationDisagreement` (distinct-cluster-count based), genuinely independent of `confidence`. See `docs/ARCHITECTURE.md` §7.0.
+2. ~~Add a genuine failure-rate metric...~~ **Done**: `GovernanceThresholds.failureRateCeiling` + `attemptFailureRate`, computed directly from raw attempt results, independent of what synthesis/clustering saw.
+3. ~~Scale `costCeiling` by `ensembleSize`...~~ **Done, via a different mechanism than originally proposed**: rather than scaling the ceiling by ensembleSize, `expertCost` now computes the **mean** tokens per attempt instead of a sum — scale-invariant by construction, no scaling factor needed. `DEFAULT_COST_CEILING` recalibrated 100k → 50k accordingly.
+4. ~~Add a decision-gate timeout...~~ **Done**: `decisionTimeoutMs` config (default 30min), enforced via a genuine `Promise.race` in `#resolveEscalation` — not just an abort signal passed down and trusted, since a non-cooperative `decisionGate` could otherwise hang the job forever (caught this exact bug via a hanging test during implementation).
+5. ~~Decouple per-task delivery from `Promise.all` batching.~~ **Investigated, not implemented as originally scoped.** The host's `AsyncJobManager` delivery model is genuinely one-job-one-final-text (`onJobComplete(jobId, text)`, delivered exactly once) — true decoupling would mean registering a separate async job per task instead of one per dispatch, a materially different tool contract (multiple job ids from one `legion_dispatch` call). Shipped instead: per-task `reportProgress` now carries the actual synthesis answer text, so a human watching progress sees a finished task's real answer immediately even while a sibling task is still escalated — final job delivery remains all-or-nothing, documented as an accepted limitation.
+6. Empirically re-tune clustering thresholds against real expert-output pairs (extend `scripts/benchmark.ts` to log cluster-merge decisions for both the text-based and execution-based paths). **Deferred** — needs a real live session with real models; not something achievable without live verification.
 
 ### Phase 4 — Model-selection smartness (independent, can slot in anytime after Phase 1)
 1. Warn (at minimum) or resolve via host model-registry metadata (at best) when a self-consistency role's configured model list isn't clearly strongest-first, instead of silently trusting array order.

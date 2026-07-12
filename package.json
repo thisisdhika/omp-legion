@@ -27,6 +27,10 @@
 				"type": "string",
 				"description": "Optional shell command (e.g. 'bun test') run against each code-mutating attempt's isolated branch for execution-grounded consensus. Off by default."
 			},
+			"decisionTimeoutMs": {
+				"type": "number",
+				"description": "How long a HOTL escalation waits for a human before auto-resolving to reject. Default 30 minutes."
+			},
 			"hotl.confidenceFloor": {
 				"type": "number",
 				"description": "Escalate when synthesis confidence falls below this value."
@@ -37,7 +41,11 @@
 			},
 			"hotl.costCeiling": {
 				"type": "number",
-				"description": "Escalate when host-reported token cost exceeds this value."
+				"description": "Escalate when the mean token cost per attempt exceeds this value (scale-invariant regardless of ensemble size)."
+			},
+			"hotl.failureRateCeiling": {
+				"type": "number",
+				"description": "Escalate when the fraction of attempts that failed/aborted outright exceeds this value, independent of confidence."
 			},
 			"embed.baseUrl": {
 				"type": "string",
@@ -53,9 +61,6 @@
 				"description": "Ollama embedding model name."
 			}
 		}
-	},
-	"pi": {
-		"extensions": ["src/index.ts"]
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",

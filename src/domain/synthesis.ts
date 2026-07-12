@@ -298,6 +298,27 @@ export function preferVerifiedCluster(
 	return [withVerifiedRepresentative, ...rest];
 }
 
+/**
+ * `disagreement` used to be defined as `1 - confidence` — a hard
+ * mathematical identity, not an independent measurement. At the default
+ * thresholds (confidenceFloor 0.6, disagreementThreshold 0.4, summing to
+ * exactly 1.0) the two governance checks always co-fired together: one weak
+ * signal double-counted as two, not two corroborating ones (see
+ * docs/plan/algorithm-audit-and-hardening-v2.md §1.2/Phase 3). This measures
+ * fragmentation instead — how many distinct clusters exist relative to the
+ * most a fully-disagreeing vote could produce — so a 5-1-1 split (one
+ * dominant answer, two different lone dissenters) reads as more disagreement
+ * than a 5-2 split (one dominant answer, one alternative) even though both
+ * can share the same majority-fraction confidence.
+ */
+export function fragmentationDisagreement(
+	clusterCount: number,
+	answerCount: number,
+): number {
+	if (answerCount <= 1) return 0;
+	return (clusterCount - 1) / (answerCount - 1);
+}
+
 export class SynthesisService implements SynthesisRunner {
 	readonly #embeddingProvider: EmbeddingProvider;
 	readonly #aggregator: Aggregator;
@@ -328,7 +349,10 @@ export class SynthesisService implements SynthesisRunner {
 			0,
 		);
 		const confidence = majority.size / answerCount;
-		const disagreement = 1 - confidence;
+		const disagreement = fragmentationDisagreement(
+			orderedClusters.length,
+			answerCount,
+		);
 		const candidates = answerCandidates(input.experts);
 		const firstAnswer = candidates[0];
 		if (!firstAnswer) throw new Error(`Task ${input.taskId} has no answer.`);

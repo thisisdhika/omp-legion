@@ -8,6 +8,7 @@ import {
 	type EmbeddingProvider,
 	SynthesisService,
 	clusterExpertAnswers,
+	fragmentationDisagreement,
 	preferVerifiedCluster,
 } from "../../src/domain/synthesis";
 
@@ -121,7 +122,9 @@ describe("SynthesisService", () => {
 		]);
 		expect(result.answer).toBe("merged answer");
 		expect(result.confidence).toBe(0.5);
-		expect(result.disagreement).toBe(0.5);
+		// Two experts, two totally distinct answers (orthogonal embeddings) —
+		// maximum possible fragmentation: (clusterCount 2 - 1) / (answerCount 2 - 1).
+		expect(result.disagreement).toBe(1);
 		expect(result.synthesisUsed).toBe(true);
 	});
 });
@@ -215,5 +218,25 @@ describe("SynthesisService with execution-grounded verification", () => {
 		});
 
 		expect(result.clusters[0]?.representativeAttemptId).toBe("attempt-2");
+	});
+});
+
+describe("fragmentationDisagreement", () => {
+	test("is zero when every attempt landed in one cluster", () => {
+		expect(fragmentationDisagreement(1, 3)).toBe(0);
+	});
+
+	test("a lone dissenter at the default ensemble size reads as moderate, not alarming", () => {
+		// 2-1 split at N=3: one dominant answer, one dissenter.
+		expect(fragmentationDisagreement(2, 3)).toBe(0.5);
+	});
+
+	test("full scatter reads as maximum disagreement", () => {
+		// 1-1-1 split at N=3: no majority at all.
+		expect(fragmentationDisagreement(3, 3)).toBe(1);
+	});
+
+	test("is zero for a single answer (nothing to disagree about)", () => {
+		expect(fragmentationDisagreement(1, 1)).toBe(0);
 	});
 });
