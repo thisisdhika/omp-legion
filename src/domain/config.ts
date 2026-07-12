@@ -67,6 +67,7 @@ const legionConfigInputSchema = z.object({
 		.optional(),
 	embedding: embeddingInputSchema.optional(),
 	maxConcurrentExperts: z.number().int().min(1).optional(),
+	verifyCommand: z.string().trim().min(1).optional(),
 });
 
 export const legionConfigSchema = z.object({
@@ -98,6 +99,13 @@ export const legionConfigSchema = z.object({
 		.int()
 		.min(1)
 		.default(DEFAULT_MAX_CONCURRENT_EXPERTS),
+	/**
+	 * Off by default: execution-grounded verification (running this command
+	 * against each code-mutating attempt's isolated branch) only runs when a
+	 * project explicitly opts in. Unset means Legion never executes anything
+	 * beyond what an expert attempt itself ran.
+	 */
+	verifyCommand: z.string().trim().min(1).optional(),
 });
 
 export type LegionConfig = z.infer<typeof legionConfigSchema>;
@@ -132,5 +140,6 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 		},
 		maxConcurrentExperts:
 			raw.maxConcurrentExperts ?? DEFAULT_MAX_CONCURRENT_EXPERTS,
+		verifyCommand: raw.verifyCommand,
 	});
 }

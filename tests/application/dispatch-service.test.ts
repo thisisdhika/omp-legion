@@ -7,6 +7,7 @@ import {
 	type ExpertExecutor,
 	type JobRunContext,
 	type JobScheduler,
+	type VerifyRequest,
 	type WinningAttempt,
 } from "../../src/application/dispatch-service";
 import { mergeLegionConfig } from "../../src/domain/config";
@@ -90,6 +91,15 @@ class RecordingBranchMerger implements BranchMerger {
 
 	async discardBranches(branchNames: readonly string[]): Promise<void> {
 		this.discarded.push([...branchNames]);
+	}
+}
+
+class RecordingVerifier {
+	readonly calls: VerifyRequest[] = [];
+
+	async verify(request: VerifyRequest): Promise<boolean> {
+		this.calls.push(request);
+		return request.branchName.endsWith("-0");
 	}
 }
 
@@ -485,6 +495,47 @@ describe("DispatchService", () => {
 		expect(
 			branchMerger.discarded.flat().every((name) => !name.endsWith("-0")),
 		).toBe(true);
+	});
+
+	test("independently verifies every branched attempt and passes the result to synthesis", async () => {
+		const scheduler = new DeferredScheduler();
+		const verifier = new RecordingVerifier();
+		const synthesizer = new RecordingSynthesizer();
+		const service = new DispatchService({
+			scheduler,
+			executor: new BranchingExecutor(),
+			synthesizer,
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			verifier,
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 3,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		// Every attempt produced a branch (BranchingExecutor), so every one is
+		// independently re-verified — not merely trusted from its own report.
+		expect(verifier.calls).toHaveLength(3);
+		const verifiedFlags = synthesizer.inputs[0]?.experts.map(
+			(expert) => expert.verified,
+		);
+		// RecordingVerifier passes only the branch ending in "-0" (attempt index 0).
+		expect(verifiedFlags).toEqual([true, false, false]);
 	});
 
 	test("caps total concurrent expert attempts at maxConcurrentExperts", async () => {

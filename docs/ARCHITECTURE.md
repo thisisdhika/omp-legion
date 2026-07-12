@@ -460,6 +460,60 @@ response from any tier is treated as that tier failing, not as a crash.
 Returning `null` from `embed()` is what triggers `synthesis.ts`'s Rouge-L
 degraded path.
 
+### 5.2 Execution-grounded consensus (`application/dispatch-service.ts`'s `#verifyResults`, `domain/synthesis.ts`'s `preferVerifiedCluster`, `infrastructure/verifier.ts`)
+
+**Why this exists:** §5's clustering groups experts by *text* similarity —
+but code is executable, and two research papers this project cites
+(arXiv 2604.15618, 2605.08680) show execution-based consensus beats
+output-pattern majority voting by 19-52 percentage points on code
+specifically, because free-text descriptions of code rarely match even when
+the code itself is functionally identical (or, the reverse: similar-sounding
+text can describe subtly different, wrong code).
+
+**Deliberate v1 scope-down from the cited research:** the papers generate
+*novel LLM-synthesized test inputs* per candidate. Legion does not — that's
+a much larger subsystem (test-case generation, execution-fingerprint
+hashing) than this phase's scope. Instead, Legion re-runs the **project's
+own existing verify command** (`verifyCommand` config, e.g. `"bun test"`)
+against each candidate's isolated branch and uses pass/fail as the signal.
+Still execution-grounded, still independent of the attempt's own self-report
+— just scoped to "does this patch pass what the project already checks"
+rather than "synthesize new tests to discriminate between candidates." Off
+by default; nothing changes for a project that never sets `verifyCommand`.
+
+**Flow:** after a task's attempts finish (`DispatchService.#run`, right
+before `synthesizer.synthesize`), `#verifyResults` re-verifies every result
+that produced a branch (read-only roles like `legion-reviewer` never do, so
+they're untouched) — bounded by the same concurrency semaphore as expert
+dispatch (§4.0), since a verify run is a comparable-cost operation.
+`HostVerifier.verify()` checks the candidate's branch out into a throwaway
+git worktree (`utils/git`'s `worktree.add`/`tryRemove` — the same
+primitives `task/worktree.ts` uses internally, not reinvented) and runs the
+configured command via `Bun.spawn`; exit code `0` → `verified: true`. A
+failed checkout or a thrown spawn is treated as `verified: false`, never a
+crash — an unverifiable attempt just falls back to the text-clustering
+signal for that attempt.
+
+**Synthesis integration:** `preferVerifiedCluster` is a small, additive
+post-processing step over the existing text/embedding clusters — it does
+not touch the clustering algorithm, confidence, or disagreement math (that
+recalibration is explicitly deferred to Phase 3, so this signal can be
+calibrated against real data once it exists — see
+`docs/plan/algorithm-audit-and-hardening-v2.md`). If any attempt has
+`verified === true`, the cluster containing it is promoted to position 0
+(the "majority"/answer position) even if a larger unverified cluster
+exists, and the verified attempt itself becomes that cluster's
+`representativeAttemptId` — which is exactly the field the isolation
+merge-back (§4.0) reads to decide whose code lands on the real repo. A task
+with no verified attempts (nothing configured, or every candidate failed
+verification) behaves exactly as before this phase existed.
+
+**Implementation status:** unit-tested (`preferVerifiedCluster`'s promotion/
+no-op cases, an end-to-end `SynthesisService` test proving the real
+clustering+verification interaction, and a `DispatchService` test proving
+every branched attempt gets independently re-verified before synthesis) but
+**not yet live-verified** against a real project's test suite.
+
 ## 6. Presentation — the tool and its render (`presentation/`)
 
 ### 6.1 Tool definition (`dispatch-tool.ts`)
@@ -609,6 +663,7 @@ Full resolution chain, in order, for one session:
 | `defaultEnsembleSize` | `1`–`16` | Ensemble size for any role without its own `ensembleSize`. |
 | `embedding.baseUrl`/`model`/`apiKey` | strings | Ollama fallback tier settings (registry/Mnemopi tiers use the host's own model resolution instead). |
 | `maxConcurrentExperts` | `≥1` | Caps total concurrent expert attempts per dispatch, all tasks combined (§4.0) — the host's own concurrency cap doesn't cover Legion's direct-executor calls. |
+| `verifyCommand` | string | Shell command re-run against each code-mutating attempt's isolated branch for execution-grounded consensus (§5.2), e.g. `"bun test"`. Off by default. |
 
 `mergeLegionConfig` (`domain/config.ts`) is where every default actually
 applies. One real bug lived here: Zod's `.default()` only fires when a key

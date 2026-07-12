@@ -17,6 +17,7 @@ export const LEGION_SETTING_KEYS = {
 	hotl: "hotl",
 	defaultEnsembleSize: "defaultEnsembleSize",
 	maxConcurrentExperts: "maxConcurrentExperts",
+	verifyCommand: "verifyCommand",
 	confidenceFloor: "hotl.confidenceFloor",
 	disagreementThreshold: "hotl.disagreementThreshold",
 	costCeiling: "hotl.costCeiling",

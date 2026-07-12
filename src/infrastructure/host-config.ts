@@ -44,6 +44,7 @@ export function parseLegionPluginSettings(
 		),
 		defaultEnsembleSize: settings[LEGION_SETTING_KEYS.defaultEnsembleSize],
 		maxConcurrentExperts: settings[LEGION_SETTING_KEYS.maxConcurrentExperts],
+		verifyCommand: settings[LEGION_SETTING_KEYS.verifyCommand],
 		hotl: {
 			...hotl,
 			confidenceFloor:

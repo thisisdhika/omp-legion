@@ -259,6 +259,45 @@ export async function clusterExpertAnswers(
 	};
 }
 
+/**
+ * Execution-grounded override: when a project's own verify command actually
+ * ran against an attempt's isolated branch (`verified === true` — a real
+ * execution result, not a text-similarity guess), the cluster containing
+ * that attempt is treated as the answer even if a larger, unverified
+ * cluster exists — per arXiv 2604.15618 and 2605.08680, execution-based
+ * consensus beats output-pattern majority voting by 19-52pp on code. Only
+ * reorders which cluster leads and which of its members is representative;
+ * does not touch confidence/disagreement (that recalibration is deferred —
+ * see docs/plan/algorithm-audit-and-hardening-v2.md Phase 3) or split/merge
+ * any cluster. A no-op when no attempt was verified (roles with nothing to
+ * execute, like legion-reviewer, or no `verifyCommand` configured at all).
+ */
+export function preferVerifiedCluster(
+	clusters: readonly AnswerCluster[],
+	experts: readonly ExpertResult[],
+): readonly AnswerCluster[] {
+	const verifiedIds = new Set(
+		experts
+			.filter((expert) => expert.verified === true)
+			.map((expert) => expert.attemptId),
+	);
+	if (verifiedIds.size === 0) return clusters;
+	const index = clusters.findIndex((cluster) =>
+		cluster.attemptIds.some((id) => verifiedIds.has(id)),
+	);
+	if (index <= 0) return clusters;
+	const promoted = clusters[index];
+	if (!promoted) return clusters;
+	const withVerifiedRepresentative: AnswerCluster = {
+		...promoted,
+		representativeAttemptId:
+			promoted.attemptIds.find((id) => verifiedIds.has(id)) ??
+			promoted.representativeAttemptId,
+	};
+	const rest = clusters.filter((_, clusterIndex) => clusterIndex !== index);
+	return [withVerifiedRepresentative, ...rest];
+}
+
 export class SynthesisService implements SynthesisRunner {
 	readonly #embeddingProvider: EmbeddingProvider;
 	readonly #aggregator: Aggregator;
@@ -277,10 +316,14 @@ export class SynthesisService implements SynthesisRunner {
 			this.#embeddingProvider,
 			input.signal,
 		);
-		const majority = clustered.clusters[0];
+		const orderedClusters = preferVerifiedCluster(
+			clustered.clusters,
+			input.experts,
+		);
+		const majority = orderedClusters[0];
 		if (!majority)
 			throw new Error(`Task ${input.taskId} has no answer cluster.`);
-		const answerCount = clustered.clusters.reduce(
+		const answerCount = orderedClusters.reduce(
 			(total, cluster) => total + cluster.size,
 			0,
 		);
@@ -297,7 +340,7 @@ export class SynthesisService implements SynthesisRunner {
 						task: input.task,
 						taskId: input.taskId,
 						experts: input.experts,
-						clusters: clustered.clusters,
+						clusters: orderedClusters,
 						clusteringMethod: clustered.method,
 						humanNote: input.humanNote,
 					},
@@ -311,7 +354,7 @@ export class SynthesisService implements SynthesisRunner {
 			disagreement,
 			clusteringMethod: clustered.method,
 			embeddingQuality: clustered.quality,
-			clusters: clustered.clusters,
+			clusters: orderedClusters,
 			synthesisUsed: shouldAggregate,
 		};
 	}

@@ -27,6 +27,7 @@ import { HostExpertExecutor, HostJobScheduler } from "./host-dispatcher";
 import { createHostOrchestrationRepository } from "./host-orchestration-repository";
 import { HostLlmAggregator } from "./llm-aggregator";
 import { HostLlmDecomposer } from "./llm-decomposer";
+import { HostVerifier } from "./verifier";
 
 function activeModel(ctx: ExtensionContext) {
 	return ctx.models.current() ?? ctx.model;
@@ -87,6 +88,9 @@ export function createHostDispatchService(
 		governanceThresholds: config.hotl,
 		maxConcurrentExperts: config.maxConcurrentExperts,
 		branchMerger: new HostBranchMerger({ cwd: ctx.cwd }),
+		verifier: config.verifyCommand
+			? new HostVerifier({ cwd: ctx.cwd, command: config.verifyCommand })
+			: undefined,
 		isModelAvailable: (selector) => ctx.models.resolve(selector) !== undefined,
 		notifyEscalation: ({ jobId, taskId, decision }) => {
 			ctx.ui.notify(

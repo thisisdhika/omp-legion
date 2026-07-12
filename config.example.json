@@ -22,6 +22,7 @@
 			},
 			"defaultEnsembleSize": 3,
 			"maxConcurrentExperts": 4,
+			"verifyCommand": "bun test",
 			"embedding": {
 				"baseUrl": "http://127.0.0.1:11434",
 				"model": "nomic-embed-text"

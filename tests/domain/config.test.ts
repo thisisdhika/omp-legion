@@ -51,6 +51,14 @@ describe("mergeLegionConfig", () => {
 			embedding: DEFAULT_EMBEDDING_SETTINGS,
 			maxConcurrentExperts: DEFAULT_MAX_CONCURRENT_EXPERTS,
 		});
+		// Off by default: no execution-grounded verification without explicit opt-in.
+		expect(config.verifyCommand).toBeUndefined();
+	});
+
+	test("passes through an explicitly configured verifyCommand", () => {
+		const config = mergeLegionConfig({ verifyCommand: "bun test" });
+
+		expect(config.verifyCommand).toBe("bun test");
 	});
 
 	test("falls back to defaults when a caller supplies present-but-undefined fields", () => {

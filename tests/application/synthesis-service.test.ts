@@ -4,12 +4,18 @@ import type { ExpertResult } from "../../src/domain/dispatch";
 import {
 	type Aggregator,
 	type AggregatorInput,
+	type AnswerCluster,
 	type EmbeddingProvider,
 	SynthesisService,
 	clusterExpertAnswers,
+	preferVerifiedCluster,
 } from "../../src/domain/synthesis";
 
-function expert(attemptId: string, output: string): ExpertResult {
+function expert(
+	attemptId: string,
+	output: string,
+	verified?: boolean,
+): ExpertResult {
 	return {
 		attemptId,
 		taskId: "task-1",
@@ -23,7 +29,15 @@ function expert(attemptId: string, output: string): ExpertResult {
 		durationMs: 1,
 		tokens: 1,
 		requests: 1,
+		verified,
 	};
+}
+
+function cluster(
+	representativeAttemptId: string,
+	attemptIds: readonly string[],
+): AnswerCluster {
+	return { representativeAttemptId, attemptIds, size: attemptIds.length };
 }
 
 class StaticEmbeddingProvider implements EmbeddingProvider {
@@ -109,5 +123,97 @@ describe("SynthesisService", () => {
 		expect(result.confidence).toBe(0.5);
 		expect(result.disagreement).toBe(0.5);
 		expect(result.synthesisUsed).toBe(true);
+	});
+});
+
+describe("preferVerifiedCluster", () => {
+	test("promotes a smaller cluster containing a verified attempt over a larger unverified one", () => {
+		const clusters = [
+			cluster("attempt-0", ["attempt-0", "attempt-1"]),
+			cluster("attempt-2", ["attempt-2"]),
+		];
+		const experts = [
+			expert("attempt-0", "wrong answer", false),
+			expert("attempt-1", "wrong answer", false),
+			expert("attempt-2", "correct answer", true),
+		];
+
+		const reordered = preferVerifiedCluster(clusters, experts);
+
+		expect(reordered[0]?.representativeAttemptId).toBe("attempt-2");
+		expect(reordered[0]?.attemptIds).toEqual(["attempt-2"]);
+		// The original majority cluster is preserved, just demoted, not lost.
+		expect(reordered[1]?.attemptIds).toEqual(["attempt-0", "attempt-1"]);
+	});
+
+	test("prefers the verified member as representative within the promoted cluster", () => {
+		const clusters = [
+			cluster("attempt-0", ["attempt-0", "attempt-1"]),
+			cluster("attempt-2", ["attempt-2", "attempt-3"]),
+		];
+		const experts = [
+			expert("attempt-0", "a", false),
+			expert("attempt-1", "a", false),
+			expert("attempt-2", "b", false),
+			expert("attempt-3", "b", true),
+		];
+
+		const reordered = preferVerifiedCluster(clusters, experts);
+
+		expect(reordered[0]?.representativeAttemptId).toBe("attempt-3");
+	});
+
+	test("is a no-op when no attempt was verified", () => {
+		const clusters = [
+			cluster("attempt-0", ["attempt-0", "attempt-1"]),
+			cluster("attempt-2", ["attempt-2"]),
+		];
+		const experts = [
+			expert("attempt-0", "a"),
+			expert("attempt-1", "a"),
+			expert("attempt-2", "b", false),
+		];
+
+		expect(preferVerifiedCluster(clusters, experts)).toEqual(clusters);
+	});
+
+	test("is a no-op when the verified attempt is already in the leading cluster", () => {
+		const clusters = [
+			cluster("attempt-0", ["attempt-0", "attempt-1"]),
+			cluster("attempt-2", ["attempt-2"]),
+		];
+		const experts = [
+			expert("attempt-0", "a", true),
+			expert("attempt-1", "a", false),
+			expert("attempt-2", "b", false),
+		];
+
+		expect(preferVerifiedCluster(clusters, experts)).toEqual(clusters);
+	});
+});
+
+describe("SynthesisService with execution-grounded verification", () => {
+	test("selects the verified-passing attempt over a larger unverified majority", async () => {
+		const aggregator = new RecordingAggregator();
+		const service = new SynthesisService({
+			embeddingProvider: new StaticEmbeddingProvider([
+				[1, 0],
+				[1, 0],
+				[0, 1],
+			]),
+			aggregator,
+		});
+
+		const result = await service.synthesize({
+			task: "Fix the bug",
+			taskId: "task-1",
+			experts: [
+				expert("attempt-0", "buggy fix", false),
+				expert("attempt-1", "buggy fix", false),
+				expert("attempt-2", "correct fix", true),
+			],
+		});
+
+		expect(result.clusters[0]?.representativeAttemptId).toBe("attempt-2");
 	});
 });

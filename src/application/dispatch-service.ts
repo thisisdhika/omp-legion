@@ -99,6 +99,23 @@ export interface BranchMerger {
 	discardBranches(branchNames: readonly string[]): Promise<void>;
 }
 
+export interface VerifyRequest {
+	readonly branchName: string;
+	readonly baseSha?: string;
+}
+
+/**
+ * Independently re-runs a project's own verify command (test suite, build,
+ * typecheck — whatever `verifyCommand` names) against one attempt's isolated
+ * branch. Execution-grounded, not a text-similarity guess: arXiv 2604.15618
+ * and 2605.08680 show execution-based consensus beats output-pattern
+ * majority voting by 19-52pp on code specifically. Only meaningful for
+ * attempts that actually produced a branch (read-only roles never do).
+ */
+export interface Verifier {
+	verify(request: VerifyRequest, signal?: AbortSignal): Promise<boolean>;
+}
+
 export interface EscalationNotice {
 	readonly jobId: string;
 	readonly taskId: string;
@@ -133,6 +150,8 @@ export interface DispatchServiceOptions {
 	readonly maxConcurrentExperts?: number;
 	/** Omit when the executor doesn't isolate attempts (e.g. test doubles) — no merge/discard step runs. */
 	readonly branchMerger?: BranchMerger;
+	/** Omit when no `verifyCommand` is configured — execution-grounded verification simply doesn't run. */
+	readonly verifier?: Verifier;
 }
 
 export interface TaskAttemptSummary {
@@ -387,6 +406,37 @@ export class DispatchService {
 		return normalizeHumanDecision(notice.taskId, decision);
 	}
 
+	/**
+	 * Independently re-verifies every result that produced a branch (read-only
+	 * roles never do) against the project's own verify command — a no-op when
+	 * no verifier is configured. Bounded by the same concurrency semaphore as
+	 * expert dispatch, since a verify run is a comparable-cost operation
+	 * (spawns a process, does real work) that could otherwise pile up
+	 * alongside a following task's own dispatch.
+	 */
+	async #verifyResults(
+		results: readonly ExpertResult[],
+		signal: AbortSignal,
+	): Promise<readonly ExpertResult[]> {
+		const verifier = this.#options.verifier;
+		if (!verifier) return results;
+		return Promise.all(
+			results.map(async (result) => {
+				if (!result.branchName) return result;
+				await this.#concurrency.acquire();
+				try {
+					const verified = await verifier.verify(
+						{ branchName: result.branchName, baseSha: result.baseSha },
+						signal,
+					);
+					return { ...result, verified };
+				} finally {
+					this.#concurrency.release();
+				}
+			}),
+		);
+	}
+
 	async #run(
 		context: JobRunContext,
 		request: DispatchRequest,
@@ -442,17 +492,21 @@ export class DispatchService {
 							}
 						}),
 					);
+					const verifiedResults = await this.#verifyResults(
+						results,
+						context.signal,
+					);
 					const synthesis = await this.#options.synthesizer.synthesize({
 						task: plan.task,
 						taskId,
-						experts: results,
+						experts: verifiedResults,
 						signal: context.signal,
 					});
 					const governance = evaluateGovernance({
 						metrics: {
 							confidence: synthesis.confidence,
 							disagreement: synthesis.disagreement,
-							cost: expertCost(results),
+							cost: expertCost(verifiedResults),
 						},
 						thresholds: this.#options.governanceThresholds,
 					});
@@ -472,7 +526,7 @@ export class DispatchService {
 							finalSynthesis = await this.#options.synthesizer.synthesize({
 								task: plan.task,
 								taskId,
-								experts: results,
+								experts: verifiedResults,
 								humanNote: resolution.note,
 								signal: context.signal,
 							});
@@ -488,7 +542,7 @@ export class DispatchService {
 					});
 					return {
 						taskId,
-						results,
+						results: verifiedResults,
 						synthesis: finalSynthesis,
 						governance,
 						resolution,

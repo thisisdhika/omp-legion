@@ -105,6 +105,7 @@ Cited research on adaptive Best-of-N (scaling sample count to task difficulty ra
 Phases are in dependency order — each assumes the previous has landed.
 
 ### Phase 1 — Isolation (blocks everything below; do first)
+**Status: implemented, unit-tested, not yet live-verified.**
 1. Add an infrastructure module wrapping the host's `task/isolation-runner.ts` (`prepareIsolationContext`, `ensureIsolation`, `commitToBranch`) — one isolated view per attempt.
 2. Change `HostExpertExecutor.run()` to run each attempt through isolation instead of bare `runSubprocess`; capture each attempt's branch/patch instead of mutating the real repo directly.
 3. Wire `AnswerCluster.representativeAttemptId` through to an actual consumer: after synthesis picks a winner, merge only that attempt's branch (`mergeTaskBranches`); discard sibling attempts' isolated changes.
@@ -112,10 +113,11 @@ Phases are in dependency order — each assumes the previous has landed.
 5. Add a concurrency cap on Legion's own dispatch (a semaphore in `DispatchService`, configurable) — the host's cap doesn't cover Legion's direct-executor calls.
 
 ### Phase 2 — Execution-grounded consensus for code-mutating roles (the biggest quality lever)
-1. For `legion-coder`/`legion-tester` attempts, after isolation lands: generate (or reuse existing) test/build commands per task, run each candidate's isolated patch against them.
-2. Fingerprint each candidate's execution result (test pass/fail set, or output hash for deterministic cases); cluster by fingerprint equality alongside (not necessarily replacing) the existing text/embedding clustering.
-3. Feed the execution-grounded cluster into `representativeAttemptId` selection for mutating roles — pick a verified-passing attempt over a merely textually-popular one when they disagree.
-4. `legion-reviewer` (prose-only, no patch to execute) stays on the existing embedding/Rouge-L clustering — no change there.
+**Status: implemented (v1-scoped), unit-tested, not yet live-verified.** Shipped as: an optional `verifyCommand` config re-runs the project's own existing verify command against each branched attempt (`infrastructure/verifier.ts`'s `HostVerifier`, checked out via a throwaway git worktree), rather than the full research's LLM-synthesized-test-input approach — a deliberate, disclosed scope-down (see `docs/ARCHITECTURE.md` §5.2). `preferVerifiedCluster` (`domain/synthesis.ts`) promotes a verified-passing attempt's cluster over a larger unverified one and feeds `representativeAttemptId`, which Phase 1's merge-back already reads. Confidence/disagreement math is untouched, exactly as planned below (Phase 3's job).
+1. ~~For `legion-coder`/`legion-tester` attempts, after isolation lands: generate (or reuse existing) test/build commands per task, run each candidate's isolated patch against them.~~ Shipped as: reuse an explicitly-configured project verify command (not LLM-generated tests — see status note above).
+2. ~~Fingerprint each candidate's execution result...~~ Shipped as: binary pass/fail (exit code), not a richer fingerprint — sufficient for "did this patch pass what the project already checks."
+3. Feed the execution-grounded cluster into `representativeAttemptId` selection for mutating roles — pick a verified-passing attempt over a merely textually-popular one when they disagree. **Done.**
+4. `legion-reviewer` (prose-only, no patch to execute) stays on the existing embedding/Rouge-L clustering — no change there. **Confirmed: read-only roles never produce a branch, so verification naturally never applies to them.**
 
 ### Phase 3 — Governance recalibration (redo against the stronger signal from Phase 2 where applicable)
 1. Replace the redundant confidence/disagreement pair with one real signal, or explicitly decouple them.

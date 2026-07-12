@@ -135,6 +135,14 @@ export interface ExpertResult {
 	readonly branchName?: string;
 	/** Baseline commit SHA `branchName` was created from; required to merge it. */
 	readonly baseSha?: string;
+	/**
+	 * Set only when a project verify command (`verifyCommand` config) actually
+	 * ran against this attempt's isolated branch — true/false is a real
+	 * execution result, not a text-similarity guess. Undefined when no verify
+	 * command is configured, or this attempt produced no branch to check
+	 * (read-only roles, or a failed/aborted attempt).
+	 */
+	readonly verified?: boolean;
 }
 
 export interface DispatchAuditData {
