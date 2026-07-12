@@ -35,7 +35,7 @@ describe("loadAgentDefinitions", () => {
 		expect(agents.has("legion-scout")).toBe(true);
 
 		const coder = agents.get("legion-coder");
-		expect(coder?.systemPrompt).toContain("independent attempts");
+		expect(coder?.systemPrompt).toContain("independent");
 		expect(coder?.name).toBe("legion-coder");
 
 		// legion-decomposer is loaded the same way as every other persona
@@ -53,7 +53,7 @@ describe("loadAgentDefinitions", () => {
 		// legion-decomposer) — used by the /centurion skill to propose the
 		// next grilling question via legion_dispatch's "scout" role.
 		const scout = agents.get("legion-scout");
-		expect(scout?.systemPrompt).toContain("independent attempts");
+		expect(scout?.systemPrompt).toContain("independent");
 		expect(scout?.systemPrompt).toContain("recommendation");
 	});
 
@@ -120,7 +120,7 @@ describe("loadAgentDefinitions", () => {
 			expect(coder?.systemPrompt).toContain(
 				"Custom project-specific coder instructions.",
 			);
-			expect(coder?.systemPrompt).not.toContain("independent attempts");
+			expect(coder?.systemPrompt).not.toContain("independent");
 		});
 	});
 
@@ -198,7 +198,7 @@ describe("loadAgentDefinitions", () => {
 			expect(agents["legion-coder"]).toContain(
 				"Custom global coder instructions.",
 			);
-			expect(agents["legion-coder"]).not.toContain("independent attempts");
+			expect(agents["legion-coder"]).not.toContain("independent");
 		});
 
 		test("a project-level override wins over a global override of the same name", () => {

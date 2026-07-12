@@ -35,8 +35,7 @@ describe("centurion skill documentation", () => {
 	// legion_dispatch result -- "wait for the result" alone wasn't a concrete
 	// enough instruction to stop the model from filling the gap with a guess.
 	test("explicitly forbids drafting a question/recommendation before the real result is delivered", () => {
-		expect(content).toMatch(/[Dd]o not draft a question/);
-		expect(content).toMatch(/[Dd]o not draft (a )?recommendation/);
+		expect(content).toMatch(/No question\.\s*No options\.\s*No recommendation/);
 	});
 
 	test("names the actual failure mode this is guarding against", () => {
