@@ -28,4 +28,18 @@ describe("centurion skill documentation", () => {
 	test("still opts out of model-invocation (deliberate: latency/cost warrants an explicit command)", () => {
 		expect(content).toMatch(/disable-model-invocation:\s*true/);
 	});
+
+	// Regression test for a live-confirmed bug: after dispatching the scout
+	// round, the primary agent's turn kept going and presented a question
+	// built from its own reasoning instead of stopping to wait for the real
+	// legion_dispatch result -- "wait for the result" alone wasn't a concrete
+	// enough instruction to stop the model from filling the gap with a guess.
+	test("explicitly forbids drafting a question/recommendation before the real result is delivered", () => {
+		expect(content).toMatch(/[Dd]o not draft a question/);
+		expect(content).toMatch(/[Dd]o not draft (a )?recommendation/);
+	});
+
+	test("names the actual failure mode this is guarding against", () => {
+		expect(content).toContain("This has actually happened");
+	});
 });
