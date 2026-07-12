@@ -1,11 +1,34 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 
 import type { DispatchService } from "../../src/application/dispatch-service";
 import {
 	createDispatchTool,
 	describePhase,
 } from "../../src/presentation/dispatch-tool";
+
+let theme: Theme;
+beforeAll(async () => {
+	const resolved = await getThemeByName("dark");
+	if (!resolved) throw new Error("dark theme not found");
+	theme = resolved;
+});
+
+describe("createDispatchTool description", () => {
+	// Regression test for a live-confirmed friction point: given an explicit
+	// tasks array to fill in itself, the primary agent burned two rejected
+	// dispatch attempts guessing the role-string convention (tried "Correctness
+	// reviewer", then "legion-reviewer") before landing on the correct bare
+	// "reviewer" on the third try. The tool's own description must state the
+	// convention up front so agents get it right the first time.
+	test("documents the bare-role-name convention for explicit tasks", () => {
+		const tool = createDispatchTool(() => undefined);
+		expect(tool.description).toContain("bare role name");
+		expect(tool.description).toMatch(/legion-reviewer.*rejected/);
+	});
+});
 
 describe("describePhase", () => {
 	// Regression coverage for a real incident: the widget showed "ROUTING —
@@ -149,5 +172,120 @@ describe("createDispatchTool", () => {
 			type: "text",
 			text: "Legion job job-1 accepted and running in the background.",
 		});
+	});
+
+	// Regression test for a live-confirmed bug: two or more concurrent
+	// dispatches (a genuinely multi-part user request fanning out into
+	// several legion_dispatch calls) rendered visually identical widgets --
+	// "Legion | 0:54" with no way to tell which task each belonged to. The
+	// widget header must include a label distinguishing this job from any
+	// sibling job running at the same time.
+	test("labels the live widget with the job's own short id, not a bare 'Legion'", async () => {
+		const service = {
+			dispatch() {
+				return {
+					jobId: "legion-review-the-following",
+					recordId: "legion-review-the-following",
+					attemptCount: 3,
+					attemptModels: ["provider/model"],
+					taskBreakdown: [],
+				};
+			},
+			getJob() {
+				// Completed immediately so monitorWidget's background loop exits
+				// on its first check without ever needing a real sleep/timer.
+				return { status: "completed" as const, lastProgressDetails: undefined };
+			},
+		} as unknown as DispatchService;
+		const tool = createDispatchTool(() => service);
+
+		let capturedRender:
+			| ((
+					tui: unknown,
+					theme: Theme,
+			  ) => { render: (width: number) => readonly string[] })
+			| undefined;
+		const ctx = {
+			ui: {
+				setWidget: (
+					_key: string,
+					render:
+						| ((
+								tui: unknown,
+								theme: Theme,
+						  ) => { render: (width: number) => readonly string[] })
+						| undefined,
+				) => {
+					if (render) capturedRender = render;
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		await tool.execute(
+			"call-1",
+			{
+				task: "Review the following module",
+				modelMap: {},
+				defaultEnsembleSize: 3,
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(capturedRender).toBeDefined();
+		const box = capturedRender?.(undefined, theme);
+		const lines = box?.render(80) ?? [];
+		const headerLine = lines.find((line) => line.includes("Legion"));
+		expect(headerLine).toContain("review-the-following");
+	});
+
+	// Regression test for a live-confirmed bug: the widget's spinner tick
+	// (reading lastProgressDetails.phase) and its separate background loop
+	// (polling job.status) can disagree about whether the job is done -- a
+	// live run showed "[COMPLETED] done" with a still-ticking clock because
+	// lastProgressDetails already said "completed" while job.status hadn't
+	// caught up yet. The widget must clear as soon as EITHER signal says the
+	// job reached a terminal phase, not only once both agree.
+	test("clears the widget as soon as lastProgressDetails reports a terminal phase, even if job.status lags", async () => {
+		const service = {
+			dispatch() {
+				return {
+					jobId: "job-1",
+					recordId: "job-1",
+					attemptCount: 1,
+					attemptModels: ["provider/model"],
+					taskBreakdown: [],
+				};
+			},
+			getJob() {
+				return {
+					// status deliberately still "running" -- simulates the
+					// scheduler lagging behind the job's own last progress report.
+					status: "running" as const,
+					lastProgressDetails: { phase: "completed" },
+				};
+			},
+		} as unknown as DispatchService;
+		const tool = createDispatchTool(() => service);
+
+		let widgetCleared = false;
+		const ctx = {
+			ui: {
+				setWidget: (_key: string, render: unknown) => {
+					if (render === undefined) widgetCleared = true;
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		await tool.execute(
+			"call-1",
+			{ task: "Review the change", modelMap: {}, defaultEnsembleSize: 3 },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		expect(widgetCleared).toBe(true);
 	});
 });

@@ -14,7 +14,11 @@ import {
 	LEGION_DISPATCH_PHASES,
 	type LegionDispatchPhase,
 } from "../domain/constants";
-import { dispatchRequestSchema, shortModelName } from "../domain/dispatch";
+import {
+	dispatchRequestSchema,
+	shortAgentName,
+	shortModelName,
+} from "../domain/dispatch";
 import { boxBorder, renderDispatchResult } from "./dispatch-card";
 import { buildProgressText, spinnerChar, useSpinnerLoop } from "./spinner";
 
@@ -86,6 +90,19 @@ function progressPartial(
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Labels the widget should never linger on: once reached, the job is done
+ * and the widget should clear immediately. Checked directly against
+ * `describePhase()`'s label so the widget's own spinner tick can close
+ * itself the instant `lastProgressDetails` reports one of these — instead of
+ * only reacting to a *separate* poll of `job.status`, which can lag behind
+ * `lastProgressDetails` by however long it takes the scheduler to mark the
+ * job terminal after its last progress report. That gap previously left a
+ * widget showing "[COMPLETED] done" with a still-ticking elapsed clock
+ * (confirmed live) until the separate status poll eventually caught up.
+ */
+const TERMINAL_PHASE_LABELS = new Set(["COMPLETED", "FAILED", "REJECTED"]);
 
 const PHASE_LABELS: Record<LegionDispatchPhase, string> = {
 	decomposing: "DECOMPOSING",
@@ -253,6 +270,13 @@ export function createDispatchTool(
 		if (!context?.ui?.setWidget) return;
 		const key = `legion:${accepted.jobId}`;
 		const startedAt = Date.now();
+		// The job's own human-readable slug, stripped of the "legion-" prefix
+		// already implied by the "Legion" widget heading — without this, two
+		// or more concurrent widgets (a genuinely multi-part dispatch fanning
+		// out into several legion_dispatch calls) render identically, and a
+		// user watching live has no way to tell which is which (confirmed
+		// live: two widgets both showing bare "Legion | 0:54").
+		const jobLabel = shortAgentName(accepted.jobId);
 		const render = (frame: number, label: string, detail: string) => {
 			context.ui.setWidget(
 				key,
@@ -262,7 +286,7 @@ export function createDispatchTool(
 					// which phase, how long, and (if reported) what's happening in it.
 					const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
 					const elapsed = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`;
-					const header = `${spinnerChar(frame)} Legion | ${elapsed}`;
+					const header = `${spinnerChar(frame)} Legion (${jobLabel}) | ${elapsed}`;
 					const status = `[${label}] ${detail}`;
 					const box = new Box(1, 0, undefined, boxBorder(theme, "accent"));
 					box.addChild(
@@ -278,19 +302,30 @@ export function createDispatchTool(
 				{ placement: "aboveEditor" },
 			);
 		};
+		let closed = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			spinner.stop();
+			context.ui.setWidget(key, undefined);
+		};
 		const spinner = useSpinnerLoop(80);
 		spinner.start((frame) => {
+			if (closed) return;
 			const { label, detail } = describePhase(
 				service.getJob(accepted.jobId)?.lastProgressDetails,
 			);
+			if (TERMINAL_PHASE_LABELS.has(label)) {
+				close();
+				return;
+			}
 			render(frame, label, detail);
 		});
 		void (async () => {
-			while (true) {
+			while (!closed) {
 				const job = service.getJob(accepted.jobId);
 				if (job?.status === "completed" || job?.status === "failed") {
-					spinner.stop();
-					context.ui.setWidget(key, undefined);
+					close();
 					return;
 				}
 				await sleep(200);
@@ -301,7 +336,7 @@ export function createDispatchTool(
 		name: "legion_dispatch",
 		label: "Legion",
 		description:
-			"Runs one task through several independent expert attempts in parallel and returns a single synthesized, cross-checked answer — an ensemble review, not a subagent spawner. Use it whenever a task is a judgment call where being wrong is costly and a second opinion would catch it, even if the user never asks for review or mentions this tool by name: security-sensitive changes, a subtle correctness bug, an architecture or design decision, or any moment where the right move is to sanity-check the answer before committing to it. Do not use it for routine, low-stakes work that can just be done directly — ensembling has real latency and token cost. Returns immediately with the job ID; the ensemble and any HOTL governance continue asynchronously in the background. Never call this tool from inside a task that this tool itself dispatched — experts give one independent answer and must not spawn further ensembles. Omit tasks to let it decompose the task automatically, or supply an explicit tasks array when the natural split is already known.",
+			'Runs one task through several independent expert attempts in parallel and returns a single synthesized, cross-checked answer — an ensemble review, not a subagent spawner. Use it whenever a task is a judgment call where being wrong is costly and a second opinion would catch it, even if the user never asks for review or mentions this tool by name: security-sensitive changes, a subtle correctness bug, an architecture or design decision, or any moment where the right move is to sanity-check the answer before committing to it. Do not use it for routine, low-stakes work that can just be done directly — ensembling has real latency and token cost. Returns immediately with the job ID; the ensemble and any HOTL governance continue asynchronously in the background. Never call this tool from inside a task that this tool itself dispatched — experts give one independent answer and must not spawn further ensembles. Omit tasks to let it decompose the task automatically, or supply an explicit tasks array when the natural split is already known. When supplying explicit tasks, each task\'s `role` must be a bare role name matching an available `legion-<role>` persona (e.g. "reviewer", "coder") — not capitalized ("Reviewer"), not prefixed ("legion-reviewer", which resolves to the non-existent "legion-legion-reviewer" and is rejected). An unmatched role rejects the whole dispatch with the exact persona list rather than substituting a different one.',
 		parameters: dispatchRequestSchema,
 		approval: "exec",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {

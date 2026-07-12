@@ -150,3 +150,13 @@ export const HOTL_DECISION_TIMEOUT_MESSAGE =
 	"No human responded before the decision timeout elapsed.";
 /** 30 minutes — long enough for a human to actually notice and respond, short enough that a job never waits forever. */
 export const DEFAULT_DECISION_TIMEOUT_MS = 30 * 60_000;
+/**
+ * 5 minutes — a per-expert wall-clock cap. Without this, a single expert
+ * stuck retry-looping on a rejected tool call (e.g. a read-only role asked to
+ * write a file) hangs the whole ensemble indefinitely: no error, no retry, no
+ * escalation, just a static "N-1/N experts finished" forever. A capped
+ * attempt fails cleanly instead, and synthesis proceeds with whichever
+ * experts did respond (or HOTL's failureRateCeiling escalates if too many
+ * did not).
+ */
+export const DEFAULT_EXPERT_TIMEOUT_MS = 5 * 60_000;

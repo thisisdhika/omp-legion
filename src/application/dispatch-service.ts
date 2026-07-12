@@ -679,6 +679,15 @@ export class DispatchService {
 			// see ExpertExecutor.prepareJob's doc comment.
 			const jobContext = await this.#options.executor.prepareJob?.();
 
+			// Shared across every concurrent #dispatchTask call below so the
+			// "N/M experts finished" progress a live view reads reflects the
+			// whole job, not just whichever task's own attempts happened to
+			// report last — a multi-task dispatch previously showed one task's
+			// local total (e.g. "1/3") while a sibling task's attempts kept
+			// completing invisibly, leaving the reported denominator smaller
+			// than the Mixtures card's own job-wide total (confirmed live).
+			const jobProgress = { completed: 0, total: plan.attempts.length };
+
 			const outcomes = await Promise.all(
 				[...attemptsByTask.entries()].map(async ([taskId, attempts]) =>
 					this.#dispatchTask({
@@ -689,6 +698,7 @@ export class DispatchService {
 						jobContext,
 						context,
 						parentToolCallId,
+						jobProgress,
 					}),
 				),
 			);
@@ -807,6 +817,9 @@ export class DispatchService {
 		readonly jobContext: unknown;
 		readonly context: JobRunContext;
 		readonly parentToolCallId?: string;
+		/** Job-wide completed/total counters, shared and mutated across every
+		 * concurrent task in this dispatch — see #run's doc comment. */
+		readonly jobProgress: { completed: number; total: number };
 	}): Promise<TaskDispatchOutcome> {
 		const {
 			taskId,
@@ -816,6 +829,7 @@ export class DispatchService {
 			jobContext,
 			context,
 			parentToolCallId,
+			jobProgress,
 		} = params;
 		const runAttempt = async (
 			attempt: DispatchAttempt,
@@ -851,18 +865,20 @@ export class DispatchService {
 		// message at job start, then silence until the first retry or the
 		// task's synthesis; a live view had nothing to show as experts actually
 		// finished one by one.
-		let completedCount = 0;
 		const initialResults = await Promise.all(
 			planned.map(async (attempt) => {
 				const result = await runAttempt(attempt);
-				completedCount += 1;
+				// Mutating a plain object across concurrent tasks is safe here:
+				// JS has no true parallelism, only interleaving at await points,
+				// so each increment is atomic relative to the others.
+				jobProgress.completed += 1;
 				await context.reportProgress(
-					`Legion: ${completedCount}/${planned.length} experts finished for task ${taskId}.`,
+					`Legion: ${jobProgress.completed}/${jobProgress.total} experts finished (task ${taskId}).`,
 					{
 						phase: "running" satisfies LegionDispatchPhase,
 						taskId,
-						completed: completedCount,
-						total: planned.length,
+						completed: jobProgress.completed,
+						total: jobProgress.total,
 					},
 				);
 				return result;

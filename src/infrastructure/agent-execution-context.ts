@@ -67,8 +67,36 @@ export const LEGION_DISPATCH_PARENT_ROUTE = "legion-dispatch";
  * AsyncLocalStorage keeps each concurrent attempt isolated: sibling experts
  * running in parallel each see only their own context, with no leakage (see
  * irc-tool-guard concurrent tests).
+ *
+ * Anchored on `globalThis` (not a plain module-scoped `const`): the host
+ * re-binds each extension against its own `ExtensionAPI` inside a dispatched
+ * subagent (`preloadedExtensionPaths` re-import), which can hand this module
+ * a second, freshly-evaluated instance in the same process. A plain
+ * module-scoped `AsyncLocalStorage` would then be a *different object* on
+ * each side — the parent's `store.run()` and the subagent's own
+ * `store.getStore()` would never agree, silently handing every guard an
+ * `undefined` context for real experts (confirmed live: git-commit-guard's
+ * fail-open-on-undefined posture let an expert's `git commit` straight
+ * through). A `Symbol.for` key on `globalThis` is process-wide regardless of
+ * how many times this module is re-evaluated, so every instance shares the
+ * one real `AsyncLocalStorage`, and its own isolation guarantee (concurrent
+ * attempts never see each other's context) is unaffected.
  */
-const store = new AsyncLocalStorage<DispatchContext>();
+const DISPATCH_CONTEXT_STORE_KEY = Symbol.for(
+	"omp-legion:agent-execution-context:store",
+);
+
+function getStore(): AsyncLocalStorage<DispatchContext> {
+	const g = globalThis as typeof globalThis & {
+		[DISPATCH_CONTEXT_STORE_KEY]?: AsyncLocalStorage<DispatchContext>;
+	};
+	let existing = g[DISPATCH_CONTEXT_STORE_KEY];
+	if (!existing) {
+		existing = new AsyncLocalStorage<DispatchContext>();
+		g[DISPATCH_CONTEXT_STORE_KEY] = existing;
+	}
+	return existing;
+}
 
 /** Derive an authenticated context from a dispatched agent name. */
 function contextForAgent(
@@ -102,12 +130,11 @@ export function runAsDispatchedAgent<T>(
 	fn: () => Promise<T>,
 	parentRoute?: string,
 ): Promise<T> {
-	// ponytail: fixed #2 — set env so isolated subprocess loads can detect
-	// they were spawned by dispatch and act accordingly. Note: ALS cannot cross
-	// the Node module-cache split, so the actual fix is in irc-tool-guard's
-	// fail-closed guard — this is a supplementary signal.
+	// Supplementary signal only, kept for any external code that inspects the
+	// environment directly; the actual fix for the module-cache split is the
+	// globalThis-anchored store above (see getStore()).
 	process.env.LEGION_ISOLATED = "1";
-	return store.run(contextForAgent(agentName, parentRoute), fn);
+	return getStore().run(contextForAgent(agentName, parentRoute), fn);
 }
 
 /** Wrap `fn` in an explicit dispatch context (tests + future callers). */
@@ -115,10 +142,10 @@ export function runWithDispatchContext<T>(
 	context: DispatchContext,
 	fn: () => Promise<T>,
 ): Promise<T> {
-	return store.run(context, fn);
+	return getStore().run(context, fn);
 }
 
 /** The authenticated dispatch context for the current async chain, if any. */
 export function currentDispatchContext(): DispatchContext | undefined {
-	return store.getStore();
+	return getStore().getStore();
 }

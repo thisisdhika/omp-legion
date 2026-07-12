@@ -41,7 +41,7 @@ describe("renderDispatchResult", () => {
 					recordId: "LegionReviewTheChange",
 					state: "running",
 					attemptCount: 3,
-					attemptModels: ["frontier", "frontier", "frontier"],
+					attemptModels: ["frontier-a", "frontier-b", "frontier-c"],
 					// dispatch() always resolves >=1 breakdown entry, even for
 					// auto-decompose — this is what a real accepted dispatch looks
 					// like (a single generic task attempted by 3 experts).
@@ -50,7 +50,7 @@ describe("renderDispatchResult", () => {
 							taskId: "task",
 							agent: "legion-coder",
 							attemptCount: 3,
-							models: ["frontier", "frontier", "frontier"],
+							models: ["frontier-a", "frontier-b", "frontier-c"],
 						},
 					],
 				},
@@ -91,13 +91,13 @@ describe("renderDispatchResult", () => {
 					recordId: "legion-review-this-javascript",
 					state: "running",
 					attemptCount: 2,
-					attemptModels: ["frontier", "frontier"],
+					attemptModels: ["frontier-a", "frontier-b"],
 					taskBreakdown: [
 						{
 							taskId: "task",
 							agent: "legion-generalist",
 							attemptCount: 2,
-							models: ["frontier", "frontier"],
+							models: ["frontier-a", "frontier-b"],
 						},
 					],
 				},
@@ -178,6 +178,70 @@ describe("renderDispatchResult", () => {
 		// system can swap them out from under this snapshot.
 		expect(body).not.toContain("mimo-v2.5-free");
 		expect(body).not.toContain("hy3:free");
+	});
+
+	// Regression test for a live-confirmed bug: two explicit tasks assigned to
+	// the same role/agent, each drawing from the identical 3-model ensemble,
+	// previously summed attempt counts across tasks (2 tasks x 3 attempts = 6)
+	// and showed "~6 models" -- overstating diversity, since only 3 distinct
+	// models actually back the ensemble. Deduping by model identifier across
+	// both tasks must report the true distinct count.
+	test("dedupes distinct models across multiple tasks assigned to the same role", () => {
+		const args = dispatchRequestSchema.parse({
+			task: "Review file A and file B",
+			tasks: [
+				{
+					id: "t1",
+					agent: "task",
+					role: "reviewer",
+					assignment: "Review file A",
+				},
+				{
+					id: "t2",
+					agent: "task",
+					role: "reviewer",
+					assignment: "Review file B",
+				},
+			],
+		});
+		const sharedModels = [
+			"provider/model-a",
+			"provider/model-b",
+			"provider/model-c",
+		];
+		const card = renderDispatchResult(
+			{
+				content: [{ type: "text", text: "scheduled" }],
+				details: {
+					jobId: "legion-two-reviews",
+					recordId: "legion-two-reviews",
+					state: "running",
+					attemptCount: 6,
+					attemptModels: [...sharedModels, ...sharedModels],
+					taskBreakdown: [
+						{
+							taskId: "t1",
+							agent: "legion-reviewer",
+							attemptCount: 3,
+							models: sharedModels,
+						},
+						{
+							taskId: "t2",
+							agent: "legion-reviewer",
+							attemptCount: 3,
+							models: sharedModels,
+						},
+					],
+				},
+			},
+			defaultOptions,
+			theme,
+			args,
+		);
+
+		const body = renderText(card);
+		expect(body).toContain("reviewer: ~3 models");
+		expect(body).not.toContain("~6 models");
 	});
 
 	test("parses markdown in the task text instead of printing it literally", () => {

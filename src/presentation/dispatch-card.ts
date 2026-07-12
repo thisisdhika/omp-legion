@@ -131,9 +131,20 @@ function renderTree(nodes: readonly TreeNode[], prefix = ""): string[] {
 
 export const MIXTURES_SECTION_LABEL = "Mixtures";
 
-/** "~N models" rather than "N": Legion's runtime fallback/adaptive-expansion can add more attempts (and swap in a different model) after this snapshot was taken, so the count shown here is a floor, not a final tally. */
-function modelCountLabel(attemptCount: number): string {
-	return `~${attemptCount} model${attemptCount === 1 ? "" : "s"}`;
+/**
+ * "~N models" rather than "N": Legion's runtime fallback/adaptive-expansion
+ * can add more attempts (and swap in a different model) after this snapshot
+ * was taken, so the count shown here is a floor, not a final tally.
+ *
+ * Counts *distinct* model identifiers, not raw attempts — a role dispatched
+ * across two tasks with the same 3-model ensemble is still 3 models, not 6;
+ * summing attempt counts instead of deduping models previously showed "~6
+ * models" for exactly that case (confirmed live), overstating the ensemble's
+ * actual model diversity.
+ */
+function modelCountLabel(models: readonly string[]): string {
+	const distinct = new Set(models).size;
+	return `~${distinct} model${distinct === 1 ? "" : "s"}`;
 }
 
 /**
@@ -151,15 +162,14 @@ function modelCountLabel(attemptCount: number): string {
 function expertsByAgentNodes(
 	taskBreakdown: readonly TaskAttemptSummary[],
 ): TreeNode[] {
-	const attemptsByAgent = new Map<string, number>();
+	const modelsByAgent = new Map<string, string[]>();
 	for (const summary of taskBreakdown) {
-		attemptsByAgent.set(
-			summary.agent,
-			(attemptsByAgent.get(summary.agent) ?? 0) + summary.attemptCount,
-		);
+		const models = modelsByAgent.get(summary.agent) ?? [];
+		models.push(...summary.models);
+		modelsByAgent.set(summary.agent, models);
 	}
-	return [...attemptsByAgent.entries()].map(([agent, attemptCount]) => ({
-		label: `${shortAgentName(agent)}: ${modelCountLabel(attemptCount)}`,
+	return [...modelsByAgent.entries()].map(([agent, models]) => ({
+		label: `${shortAgentName(agent)}: ${modelCountLabel(models)}`,
 	}));
 }
 
@@ -215,7 +225,7 @@ function metadataNodes(
 			children: expertsByAgentNodes(details.taskBreakdown),
 		});
 	} else {
-		nodes.push({ label: `experts: ${modelCountLabel(details.attemptCount)}` });
+		nodes.push({ label: `experts: ${modelCountLabel(details.attemptModels)}` });
 	}
 	const modelMapKeys = Object.keys(args?.modelMap ?? {});
 	if (modelMapKeys.length > 0)

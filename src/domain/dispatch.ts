@@ -45,7 +45,13 @@ export const dispatchTaskSchema = z.object({
 	// vestigial) doesn't hit a schema validation error over a field with no
 	// effect on dispatch.
 	agent: z.string().trim().min(1).optional(),
-	role: z.string().trim().min(1),
+	role: z
+		.string()
+		.trim()
+		.min(1)
+		.describe(
+			'Bare role name matching an available legion-<role> persona, e.g. "reviewer" or "coder" — not "Reviewer", not "legion-reviewer" (that becomes "legion-legion-reviewer" and is rejected). An unmatched role rejects the whole dispatch rather than substituting a different persona.',
+		),
 	assignment: z.string().trim().min(1),
 	description: z.string().trim().min(1).optional(),
 });

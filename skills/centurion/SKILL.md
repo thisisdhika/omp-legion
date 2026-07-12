@@ -1,12 +1,14 @@
 ---
 name: centurion
-description: A grilling session where each next question comes from Legion's expert ensemble instead of one model guessing alone — the sharpest unresolved decision, concrete options, and a recommendation, cross-checked before it reaches the human. Use when the user says "/centurion", asks to grill or interrogate a plan/design with extra rigor, or wants a second opinion on which question to ask next before committing to a design. Slower and costlier per question than a normal grilling session (each question is a real legion_dispatch round-trip) — reserve it for plans where a wrong early decision is expensive, not routine clarification.
+description: A grilling session where each next question comes from Legion's expert ensemble instead of one model guessing alone — the sharpest unresolved decision, concrete options, and a recommendation, cross-checked before it reaches the human. Invoked explicitly via the "/skill:centurion" slash command (this skill sets disable-model-invocation, so it never fires on trigger-phrase matching alone — asking to "grill" or "interrogate" a plan reaches the plain grilling skill instead unless the user names centurion directly or types the slash command). Slower and costlier per question than a normal grilling session (each question is a real legion_dispatch round-trip) — reserve it for plans where a wrong early decision is expensive, not routine clarification.
 disable-model-invocation: true
 ---
 
 # Centurion
 
 A grilling session — one question at a time, the decisions are the human's, never proceed until confirmed — except the question itself is produced by Legion's ensemble instead of guessed by one model. Picking the sharpest next question is a judgment call like any other; a bad question wastes the human's time, a good one finds the real fork. This dispatches that judgment call to `legion_dispatch`'s `scout` role every single round.
+
+**Invocation:** type `/skill:centurion <topic>` — this is a plain slash command, not something the model infers from wording like "grill" or "interrogate" (this skill intentionally opts out of trigger-phrase auto-invocation; the generic grilling skill handles those instead). A bare `/centurion` is not a recognized command by this host and will not invoke this skill.
 
 **Latency/cost warning:** every question is a full ensemble dispatch (multiple independent experts + synthesis, occasionally a HOTL escalation). This can take minutes per question, not seconds. Tell the user up front that each round will take a while, and default to a hard cap on rounds (see below) rather than grilling indefinitely.
 

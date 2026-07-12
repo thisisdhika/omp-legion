@@ -83,6 +83,7 @@ export function createHostDispatchService(
 			parentActiveModelPattern: activeModelSelector(ctx),
 			agents,
 			eventBus,
+			expertTimeoutMs: config.expertTimeoutMs,
 		}),
 		resolveAgent: (role) => resolveAgentName(role, agentNames),
 		synthesizer: new SynthesisService({

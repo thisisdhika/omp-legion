@@ -305,6 +305,68 @@ describe("DispatchService", () => {
 		expect(last?.details?.completed).toBe(last?.details?.total);
 		expect(last?.details?.total).toBeGreaterThan(0);
 	});
+	// Regression test for a live-confirmed bug: a multi-task explicit dispatch
+	// reported "running" progress with completed/total scoped to whichever
+	// task's own attempts happened to land most recently (e.g. "1/3" for one
+	// task) instead of the whole job's total across every task — visibly
+	// inconsistent with the Mixtures card's own job-wide attempt count.
+	test("aggregates completed/total across every task in a multi-task dispatch", async () => {
+		const scheduler = new DeferredScheduler();
+		const executor = new RecordingExecutor();
+		const service = new DispatchService({
+			scheduler,
+			executor,
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			config: mergeLegionConfig({ defaultEnsembleSize: 3 }),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+		});
+
+		const accepted = service.dispatch({
+			task: "Review two files",
+			tasks: [
+				{
+					id: "t1",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review A",
+				},
+				{
+					id: "t2",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review B",
+				},
+			],
+		});
+		// 2 tasks x ensembleSize 3 = 6 total attempts across the whole job.
+		expect(accepted.attemptCount).toBe(6);
+
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+
+		const reported: Array<{ details?: Record<string, unknown> }> = [];
+		await job({
+			jobId: "job-1",
+			signal: new AbortController().signal,
+			reportProgress: async (_text, details) => {
+				reported.push({ details });
+			},
+		});
+
+		const runningUpdates = reported.filter(
+			(r) => r.details?.phase === "running" && "completed" in (r.details ?? {}),
+		);
+		const last = runningUpdates.at(-1);
+		// The last "running" update must reflect the whole job (6/6), not a
+		// single task's own local total (3/3) -- both would satisfy
+		// completed === total, so assert the actual value, not just equality.
+		expect(last?.details?.total).toBe(6);
+		expect(last?.details?.completed).toBe(6);
+	});
+
 	test("falls back to one task when decomposition fails", async () => {
 		const scheduler = new DeferredScheduler();
 		const executor = new RecordingExecutor();

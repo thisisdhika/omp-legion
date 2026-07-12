@@ -51,6 +51,16 @@ export interface HostExecutorOptions {
 	 * why IRC and the numeric subagent counter worked before this was wired).
 	 */
 	readonly eventBus?: ExecutorOptions["eventBus"];
+	/**
+	 * Wall-clock cap per expert attempt (forwarded to the host's own
+	 * `ExecutorOptions.maxRuntimeMs`). Without this, an expert stuck retrying
+	 * a tool call it doesn't have (e.g. a read-only role asked to edit a
+	 * file) hangs indefinitely — no error, no retry, no escalation, just a
+	 * static "N-1/N experts finished" forever (confirmed live). A capped
+	 * attempt fails cleanly instead, and synthesis proceeds with whichever
+	 * experts did respond.
+	 */
+	readonly expertTimeoutMs?: number;
 }
 
 /** Builds a synthetic failure SingleResult when isolation setup itself throws (not a git repo, no backend available, etc.) — before the subagent ever ran. */
@@ -132,6 +142,7 @@ export class HostExpertExecutor implements ExpertExecutor {
 			modelRegistry: this.#options.modelRegistry,
 			eventBus: this.#options.eventBus,
 			signal: execution.signal,
+			maxRuntimeMs: this.#options.expertTimeoutMs,
 			// Deliberately constructed rather than omitted: without this, every
 			// spawn silently discarded whatever session-level settings existed
 			// (runSubprocess falls back to a blank Settings.isolated() when given

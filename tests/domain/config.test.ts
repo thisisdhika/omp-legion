@@ -8,6 +8,7 @@ import {
 	DEFAULT_DISAGREEMENT_THRESHOLD,
 	DEFAULT_EMBEDDING_SETTINGS,
 	DEFAULT_ENSEMBLE_SIZE,
+	DEFAULT_EXPERT_TIMEOUT_MS,
 	DEFAULT_HOTL_THRESHOLDS,
 	DEFAULT_MAX_CONCURRENT_EXPERTS,
 	DEFAULT_TEMPERATURE_LADDER,
@@ -63,6 +64,18 @@ describe("mergeLegionConfig", () => {
 		const config = mergeLegionConfig({ verifyCommand: "bun test" });
 
 		expect(config.verifyCommand).toBe("bun test");
+	});
+
+	test("defaults expertTimeoutMs when omitted", () => {
+		const config = mergeLegionConfig({});
+
+		expect(config.expertTimeoutMs).toBe(DEFAULT_EXPERT_TIMEOUT_MS);
+	});
+
+	test("passes through an explicitly configured expertTimeoutMs", () => {
+		const config = mergeLegionConfig({ expertTimeoutMs: 120_000 });
+
+		expect(config.expertTimeoutMs).toBe(120_000);
 	});
 
 	test("falls back to defaults when a caller supplies present-but-undefined fields", () => {
