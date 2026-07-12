@@ -5,6 +5,7 @@ import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-regis
 
 import type { DecomposerPolicy } from "../../src/domain/config";
 import type { DecomposerAuditEvent } from "../../src/domain/decomposition";
+import { DECOMPOSER_SYSTEM_PROMPT } from "../../src/infrastructure/aggregator-prompts";
 import type { HostLlmOptions } from "../../src/infrastructure/host-llm";
 import { HostLlmDecomposer } from "../../src/infrastructure/llm-decomposer";
 
@@ -184,5 +185,96 @@ describe("HostLlmDecomposer sequential fallback", () => {
 			selector: "prov/activesession",
 			status: "success",
 		});
+	});
+});
+
+describe("HostLlmDecomposer systemPrompt option", () => {
+	// The real prompt comes from the bundled/overridable
+	// agents/legion-decomposer.md persona (see host-dispatch-service.ts) —
+	// this locks in that HostLlmDecomposer actually sends whatever prompt it
+	// was given, rather than always using the hardcoded fallback constant.
+	function captureSystemPrompt() {
+		const seen: string[][] = [];
+		const complete = async (
+			_options: HostLlmOptions,
+			systemPrompt: string[],
+		): Promise<string> => {
+			seen.push(systemPrompt);
+			return SUCCESS_JSON;
+		};
+		return { complete, seen };
+	}
+
+	test("uses the injected agent systemPrompt when provided", async () => {
+		const { complete, seen } = captureSystemPrompt();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			systemPrompt: "custom project-overridden decomposer instructions",
+			complete,
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		expect(seen).toEqual([
+			["custom project-overridden decomposer instructions"],
+		]);
+	});
+
+	test("falls back to the hardcoded default when no systemPrompt is provided", async () => {
+		const { complete, seen } = captureSystemPrompt();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			complete,
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		expect(seen[0]?.length).toBeGreaterThan(1);
+		expect(seen[0]?.join(" ")).toContain("split");
+	});
+
+	test("appends the real available-roles roster as an additional system block", async () => {
+		const { complete, seen } = captureSystemPrompt();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			complete,
+			availableRoles: [
+				{ role: "coder", description: "Implementation specialist." },
+				{ role: "security-auditor", description: "Custom project persona." },
+			],
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		const blocks = seen[0] ?? [];
+		expect(blocks.some((block) => block.includes("security-auditor"))).toBe(
+			true,
+		);
+		expect(
+			blocks.some((block) => block.includes("Custom project persona.")),
+		).toBe(true);
+	});
+
+	test("doesn't append an empty roster block when no roles are available", async () => {
+		const { complete, seen } = captureSystemPrompt();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			complete,
+			availableRoles: [],
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		// Same block count as the hardcoded default alone — an empty roster
+		// must not add a stray empty system block.
+		expect(seen[0]?.length).toBe(DECOMPOSER_SYSTEM_PROMPT.length);
 	});
 });

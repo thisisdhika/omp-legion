@@ -18,6 +18,7 @@ import type {
 import type {
 	ExpertExecution,
 	ExpertExecutor,
+	JobInfo,
 	JobRunContext,
 	JobScheduler,
 } from "../application/dispatch-service";
@@ -192,6 +193,10 @@ export class HostExpertExecutor implements ExpertExecutor {
 
 export class HostJobScheduler implements JobScheduler {
 	readonly #manager: AsyncJobManager;
+	readonly #lastProgress = new Map<
+		string,
+		{ text: string; details?: Record<string, unknown> }
+	>();
 
 	constructor(manager: AsyncJobManager) {
 		this.#manager = manager;
@@ -201,17 +206,32 @@ export class HostJobScheduler implements JobScheduler {
 		label: string,
 		run: (context: JobRunContext) => Promise<string>,
 		id?: string,
+		onProgress?: (text: string, details?: Record<string, unknown>) => void,
 	): string {
-		return this.#manager.register(
-			"task",
-			label,
-			(context) =>
-				run({
-					jobId: context.jobId,
-					signal: context.signal,
-					reportProgress: context.reportProgress,
-				}),
-			{ id },
-		);
+		// The manager's own onProgress callback already receives every
+		// reportProgress call with its (text, details) pair, keyed by the same
+		// id the run callback sees as context.jobId — tracking it here alone
+		// (rather than also re-wrapping context.reportProgress) is the single
+		// source of truth getJob() reads back.
+		return this.#manager.register("task", label, run, {
+			id,
+			onProgress: (text, details) => {
+				this.#lastProgress.set(id ?? "", { text, details });
+				onProgress?.(text, details);
+			},
+		});
+	}
+	getJob(id: string): JobInfo | undefined {
+		const job = this.#manager.getJob(id);
+		if (!job) return undefined;
+		const lastProgress = this.#lastProgress.get(id);
+		return {
+			status: job.status,
+			resultText: job.resultText,
+			errorText: job.errorText,
+			lastProgressText: lastProgress?.text,
+			lastProgressDetails: lastProgress?.details,
+			promise: job.promise,
+		};
 	}
 }

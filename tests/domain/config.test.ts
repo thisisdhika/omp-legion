@@ -152,6 +152,34 @@ describe("resolveLegionConfig precedence", () => {
 		});
 	});
 
+	// Regression test: a role's configured temperatureLadder was silently
+	// dropped by the modelMap-rebuild step (and, before roleModelInputSchema
+	// declared the field, stripped even earlier by zod's input parsing) — it
+	// never reached the attempts that needed it, always falling back to
+	// DEFAULT_TEMPERATURE_LADDER regardless of what a role's config said.
+	test("preserves a role's configured temperatureLadder through the merge", () => {
+		const config = mergeLegionConfig({
+			modelMap: {
+				coder: {
+					models: ["provider/coder"],
+					strategy: "diverse",
+					ensembleSize: 3,
+					temperatureLadder: [0.15, 0.3, 0.35],
+				},
+			},
+		});
+
+		expect(config.modelMap.coder?.temperatureLadder).toEqual([0.15, 0.3, 0.35]);
+	});
+
+	test("a role with no configured temperatureLadder has none (falls back at dispatch time)", () => {
+		const config = mergeLegionConfig({
+			modelMap: { reviewer: { models: ["provider/reviewer"] } },
+		});
+
+		expect(config.modelMap.reviewer?.temperatureLadder).toBeUndefined();
+	});
+
 	test("merges modelMap per role rather than replacing the whole map", () => {
 		const config = resolveLegionConfig({
 			global: { modelMap: { reviewer: { models: ["p/x"], ensembleSize: 2 } } },

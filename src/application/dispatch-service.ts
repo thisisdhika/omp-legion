@@ -13,6 +13,7 @@ import {
 	HOTL_EMPTY_EDIT_MESSAGE,
 	HOTL_NO_DECISION_PROVIDER_MESSAGE,
 	LEGION_DISPATCH_JOB_LABEL,
+	type LegionDispatchPhase,
 } from "../domain/constants";
 import {
 	type DecomposerAuditEvent,
@@ -34,6 +35,8 @@ import {
 	humanReadableJobId,
 	nextReplacement,
 	selectorKey,
+	shortAgentName,
+	shortModelName,
 } from "../domain/dispatch";
 import {
 	type GovernanceDecision,
@@ -81,12 +84,24 @@ export interface JobRunContext {
 	): Promise<void>;
 }
 
+export interface JobInfo {
+	readonly status: "running" | "completed" | "failed" | "cancelled";
+	readonly resultText?: string;
+	readonly errorText?: string;
+	readonly lastProgressText?: string;
+	/** The details payload attached to the most recent reportProgress call — carries the structured `phase` tag (see LegionDispatchPhase) plus whatever else that stage reported (e.g. completed/total counts), so a live view can read real signals instead of guessing from `lastProgressText`'s prose. */
+	readonly lastProgressDetails?: Record<string, unknown>;
+	readonly promise: Promise<void>;
+}
+
 export interface JobScheduler {
 	schedule(
 		label: string,
 		run: (context: JobRunContext) => Promise<string>,
 		id?: string,
+		onProgress?: (text: string, details?: Record<string, unknown>) => void,
 	): string;
+	getJob(id: string): JobInfo | undefined;
 }
 
 /** A task's winning attempt (per SynthesisResult.clusters[0].representativeAttemptId) that actually produced a branch. */
@@ -168,6 +183,8 @@ export interface DispatchServiceOptions {
 
 export interface TaskAttemptSummary {
 	readonly taskId: string;
+	/** The Legion persona (or host default agent) dispatched for this task's role — constant across all of the task's attempts, since role→agent resolution happens once per task, before attempts fan out by model/temperature. */
+	readonly agent: string;
 	readonly attemptCount: number;
 	readonly models: readonly string[];
 }
@@ -185,13 +202,18 @@ function summarizeAttemptsByTask(
 	attempts: readonly DispatchAttempt[],
 ): TaskAttemptSummary[] {
 	const modelsByTask = new Map<string, string[]>();
+	const agentByTask = new Map<string, string>();
 	for (const attempt of attempts) {
 		const models = modelsByTask.get(attempt.taskId) ?? [];
 		models.push(attempt.model);
 		modelsByTask.set(attempt.taskId, models);
+		agentByTask.set(attempt.taskId, attempt.agent);
 	}
 	return [...modelsByTask.entries()].map(([taskId, models]) => ({
 		taskId,
+		// agentByTask is populated from the same attempts loop, so every
+		// taskId present in modelsByTask has a matching entry here.
+		agent: agentByTask.get(taskId) as string,
 		attemptCount: models.length,
 		models,
 	}));
@@ -377,14 +399,15 @@ function formatGovernance(
 }
 
 function summarizeResults(
-	jobId: string,
+	_jobId: string,
 	outcomes: readonly TaskDispatchOutcome[],
 ): string {
 	const results = outcomes.flatMap((outcome) => outcome.results);
 	const completed = results.filter(
 		(result) => result.exitCode === 0 && !result.aborted,
 	).length;
-	const header = `## Legion Dispatch — ${jobId}\n\n**${completed}/${results.length} expert attempts completed**`;
+	const summary = `**${completed}/${results.length} expert attempts completed**`;
+	const multipleTasks = outcomes.length > 1;
 	const tasks = outcomes.map((outcome) => {
 		const {
 			taskId,
@@ -394,7 +417,7 @@ function summarizeResults(
 			results: taskResults,
 		} = outcome;
 		const sections = [
-			`### ${taskId}`,
+			multipleTasks ? `**Task: ${taskId}**` : "",
 			`**Confidence:** ${synthesis.confidence.toFixed(3)} · **Disagreement:** ${synthesis.disagreement.toFixed(3)} · **Clustering:** ${synthesis.clusteringMethod}`,
 			formatGovernance(governance, resolution),
 			synthesis.answer,
@@ -402,7 +425,7 @@ function summarizeResults(
 		].filter((section) => section.trim().length > 0);
 		return sections.join("\n\n");
 	});
-	return [header, ...tasks].join("\n\n---\n\n");
+	return [summary, ...tasks].join("\n\n---\n\n");
 }
 interface ReplacementRecord {
 	readonly from: string;
@@ -450,7 +473,11 @@ export class DispatchService {
 			dispatchRequestSchema.parse(rawRequest),
 			this.#options.config,
 		);
-		const preview = this.#buildPlan(request, "preview");
+		const previewRequest =
+			request.tasks && request.tasks.length > 0
+				? request
+				: { ...request, tasks: [...fallbackDecomposition(request.task)] };
+		const preview = this.#buildPlan(previewRequest, "preview");
 		const jobId = this.#options.scheduler.schedule(
 			LEGION_DISPATCH_JOB_LABEL,
 			(context) => this.#run(context, request, parentToolCallId),
@@ -466,12 +493,22 @@ export class DispatchService {
 		};
 	}
 
+	/** Expose job status so the tool can poll for completion and stream live progress. */
+	getJob(id: string): ReturnType<JobScheduler["getJob"]> {
+		return this.#options.scheduler.getJob(id);
+	}
+
 	#buildPlan(request: DispatchRequest, idPrefix: string) {
 		return buildDispatchPlan(
 			request,
 			this.#options.defaultModel,
 			this.#options.isModelAvailable,
-			(index, taskId) => `${idPrefix}-${taskId}-${index}`,
+			// e.g. "legion-review-the-change-coder-mimo-v2.5-free-0" — agent and
+			// model tell you *what's actually running*; taskId+index alone (the
+			// prior shape) told you neither, and the full job slug already made
+			// the id long before this part even started.
+			(index, _taskId, agent, model) =>
+				`${idPrefix}-${shortAgentName(agent)}-${shortModelName(model)}-${index}`,
 			this.#options.resolveAgent,
 		);
 	}
@@ -482,6 +519,13 @@ export class DispatchService {
 		decomposerAttempts: DecomposerAuditEvent[],
 	): Promise<DispatchRequest> {
 		if (request.tasks && request.tasks.length > 0) return request;
+		// This is a real LLM call and can legitimately take a while — reported
+		// before awaiting it (not just on failure) so a live view has something
+		// accurate to say for however long it's in flight, instead of reading
+		// as a stalled/broken widget with nothing to show.
+		await context.reportProgress("Legion is deciding how to split the task.", {
+			phase: "decomposing" satisfies LegionDispatchPhase,
+		});
 		try {
 			const tasks = await this.#options.decomposer?.decompose({
 				task: request.task,
@@ -493,6 +537,7 @@ export class DispatchService {
 			await context.reportProgress(
 				"Legion decomposition failed; using the full task as one assignment.",
 				{
+					phase: "decomposing" satisfies LegionDispatchPhase,
 					error: error instanceof Error ? error.message : String(error),
 					decomposerAttempts,
 				},
@@ -604,12 +649,19 @@ export class DispatchService {
 		});
 		await context.reportProgress(
 			`Legion dispatch ${context.jobId} is running.`,
-			{ attempts: plan.attempts.length },
+			{
+				phase: "running" satisfies LegionDispatchPhase,
+				attempts: plan.attempts.length,
+				completed: 0,
+			},
 		);
 		if (plan.warnings.length > 0) {
 			await context.reportProgress(
 				`Legion dispatch ${context.jobId} has config warnings.`,
-				{ warnings: plan.warnings },
+				{
+					phase: "running" satisfies LegionDispatchPhase,
+					warnings: plan.warnings,
+				},
 			);
 		}
 
@@ -681,7 +733,11 @@ export class DispatchService {
 				);
 				await context.reportProgress(
 					`Legion dispatch ${context.jobId} rejected by human decision.`,
-					{ taskId: rejected.taskId, humanDecision: rejected.action },
+					{
+						phase: "rejected" satisfies LegionDispatchPhase,
+						taskId: rejected.taskId,
+						humanDecision: rejected.action,
+					},
 				);
 				throw new Error(`Human rejected task "${rejected.taskId}".`);
 			}
@@ -720,6 +776,7 @@ export class DispatchService {
 			await context.reportProgress(
 				`Legion dispatch ${context.jobId} completed.`,
 				{
+					phase: "completed" satisfies LegionDispatchPhase,
 					attempts: results.length,
 					failed: results.filter(
 						(result) => result.exitCode !== 0 || result.aborted === true,
@@ -788,8 +845,29 @@ export class DispatchService {
 		for (const attempt of planned) attemptedSelectors.add(selectorKey(attempt));
 		const nextIndex = { value: planned.length };
 
-		// 1. Run the planned attempts concurrently (existing behavior: bounded by #concurrency).
-		const initialResults = await Promise.all(planned.map(runAttempt));
+		// 1. Run the planned attempts concurrently (existing behavior: bounded by
+		// #concurrency). Each attempt reports its own completion as it lands —
+		// previously the only signal for this whole phase was one "is running"
+		// message at job start, then silence until the first retry or the
+		// task's synthesis; a live view had nothing to show as experts actually
+		// finished one by one.
+		let completedCount = 0;
+		const initialResults = await Promise.all(
+			planned.map(async (attempt) => {
+				const result = await runAttempt(attempt);
+				completedCount += 1;
+				await context.reportProgress(
+					`Legion: ${completedCount}/${planned.length} experts finished for task ${taskId}.`,
+					{
+						phase: "running" satisfies LegionDispatchPhase,
+						taskId,
+						completed: completedCount,
+						total: planned.length,
+					},
+				);
+				return result;
+			}),
+		);
 		const results: ExpertResult[] = [...initialResults];
 		// 2. Runtime model fallback: retry retryable failures on the next unattempted selector.
 		const replacements = await this.#runFallback({
@@ -811,6 +889,10 @@ export class DispatchService {
 		const verifiedResults = await this.#verifyResults(results, signal);
 
 		// 4. Initial synthesis + governance.
+		await context.reportProgress(`Legion is synthesizing task ${taskId}.`, {
+			phase: "synthesizing" satisfies LegionDispatchPhase,
+			taskId,
+		});
 		const initialSynthesis = await this.#synthesize(
 			taskId,
 			verifiedResults,
@@ -857,6 +939,20 @@ export class DispatchService {
 			};
 			if (this.#options.notifyEscalation)
 				notifyWithoutBlocking(this.#options.notifyEscalation, notice);
+			// #resolveEscalation blocks on a human decision (or the configured
+			// timeout) — reported before that wait starts, not just implied by
+			// the eventual "rejected"/synthesized outcome, so a live view can
+			// say "waiting on a human" instead of looking stuck.
+			await context.reportProgress(
+				`Legion escalated task ${taskId} for human review.`,
+				{
+					phase: "escalated" satisfies LegionDispatchPhase,
+					taskId,
+					reasons: expanded.governance.reasons,
+					confidence: expanded.synthesis.confidence,
+					disagreement: expanded.synthesis.disagreement,
+				},
+			);
 			resolution = await this.#resolveEscalation(notice, signal);
 			if (resolution.action === HOTL_DECISION_EDIT) {
 				finalSynthesis = await this.#synthesize(
@@ -871,6 +967,7 @@ export class DispatchService {
 		}
 
 		await context.reportProgress(`Legion synthesized task ${taskId}.`, {
+			phase: "synthesizing" satisfies LegionDispatchPhase,
 			taskId,
 			confidence: finalSynthesis.confidence,
 			disagreement: finalSynthesis.disagreement,
@@ -953,6 +1050,7 @@ export class DispatchService {
 				await params.context.reportProgress(
 					`Legion retried task ${params.taskId} on ${spec.model} after a retryable provider failure.`,
 					{
+						phase: "retrying" satisfies LegionDispatchPhase,
 						taskId: params.taskId,
 						replacedModel: current.model,
 						model: spec.model,
@@ -1055,6 +1153,7 @@ export class DispatchService {
 		await params.context.reportProgress(
 			`Legion expanded task ${params.taskId} with one ${spec.model} attempt to resolve the escalation.`,
 			{
+				phase: "expanding" satisfies LegionDispatchPhase,
 				taskId: params.taskId,
 				model: spec.model,
 				reason: "expansion",

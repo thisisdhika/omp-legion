@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 
 import type { DispatchService } from "./application/dispatch-service";
-import { loadDispatchAgents } from "./infrastructure/agent-loader";
+import { loadAgentDefinitions } from "./infrastructure/agent-loader";
+import { registerGitCommitGuard } from "./infrastructure/git-commit-guard";
 import { loadLegionConfig } from "./infrastructure/host-config";
 import { createHostDispatchService } from "./infrastructure/host-dispatch-service";
 import { registerIrcToolGuard } from "./infrastructure/irc-tool-guard";
@@ -15,7 +16,7 @@ export default function legionExtension(api: ExtensionAPI): void {
 		service = undefined;
 		const [config, agents] = await Promise.all([
 			loadLegionConfig(ctx.cwd),
-			loadDispatchAgents(ctx.cwd),
+			loadAgentDefinitions(ctx.cwd),
 		]);
 		// api.events is only reachable here, at registration time —
 		// ExtensionContext (ctx) does not expose it. Threading it into the
@@ -27,5 +28,6 @@ export default function legionExtension(api: ExtensionAPI): void {
 
 	registerTaskToolGuard(api);
 	registerIrcToolGuard(api);
+	registerGitCommitGuard(api);
 	api.registerTool(createDispatchTool(() => service));
 }

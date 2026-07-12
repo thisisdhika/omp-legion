@@ -26,6 +26,7 @@ const roleModelInputSchema = z.object({
 		.min(MIN_ENSEMBLE_SIZE)
 		.max(MAX_ENSEMBLE_SIZE)
 		.optional(),
+	temperatureLadder: z.array(z.number().min(0).max(2)).min(1).optional(),
 });
 /**
  * The decomposer always runs exactly one model at a time — it is an
@@ -168,6 +169,12 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 				models: policy.models,
 				strategy: policy.strategy ?? DEFAULT_DISPATCH_STRATEGY,
 				ensembleSize: policy.ensembleSize ?? defaultEnsembleSize,
+				// Previously dropped here even when present on the input (and,
+				// before roleModelInputSchema declared this field at all, also
+				// stripped by zod during input parsing) — a role's configured
+				// temperatureLadder never reached the attempts that needed it,
+				// silently falling back to DEFAULT_TEMPERATURE_LADDER instead.
+				temperatureLadder: policy.temperatureLadder,
 			},
 		]),
 	);

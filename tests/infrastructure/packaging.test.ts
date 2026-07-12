@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 import {
 	buildRuleFromMarkdown,
 	createSourceMeta,
+	scanSkillsFromDir,
 } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import {
 	clearOmpExtensionCliRoots,
@@ -19,14 +20,16 @@ import { bundledAgentFilePaths } from "../../src/infrastructure/agent-loader";
 /**
  * Audited OMP discovery conventions (from @oh-my-pi/pi-coding-agent):
  *  - extension-package agents are discovered from `<ext>/agents/*.md`
- *    (task/discovery.ts) and rules from `<ext>/rules/*` (discovery/omp-plugins.ts).
+ *    (task/discovery.ts), rules from `<ext>/rules/*`, and skills from
+ *    `<ext>/skills/<name>/SKILL.md` (both discovery/omp-plugins.ts).
  * Legion ships its personas at the extension-package `agents/` root (the OMP
- * convention) and its usage rule at `rules/`, so the host loader finds both
- * when the package is registered as an OMP extension. The smoke test below
- * packs the package, extracts it, and proves the rule + every bundled persona
- * (1) ship in the tarball, (2) match the source checkout byte-for-byte, and
- * (3) are discoverable by the host loader — via discoverAgents() over an
- * injected extension root for agents, and via the rule builder for the rule.
+ * convention), its usage rule at `rules/`, and its skills at `skills/<name>/`,
+ * so the host loader finds all three when the package is registered as an OMP
+ * extension. The smoke test below packs the package, extracts it, and proves
+ * the rule + every bundled persona + every bundled skill (1) ship in the
+ * tarball, (2) match the source checkout byte-for-byte, and (3) are
+ * discoverable by the host loader — via discoverAgents() for agents, the rule
+ * builder for the rule, and scanSkillsFromDir() for skills.
  */
 const REPO_ROOT = join(import.meta.dir, "../..");
 
@@ -72,7 +75,7 @@ beforeAll(async () => {
 });
 
 describe("packaging — installed-package discovery matches source checkout", () => {
-	test("rules/legion-dispatch.md and every bundled persona ship in the tarball", () => {
+	test("rules/legion-dispatch.md, every bundled persona, and every bundled skill ship in the tarball", () => {
 		expect(() =>
 			readFileSync(join(packed.root, "rules/legion-dispatch.md"), "utf-8"),
 		).not.toThrow();
@@ -83,6 +86,10 @@ describe("packaging — installed-package discovery matches source checkout", ()
 			const rel = `agents/${basename(src)}`;
 			expect(() => readFileSync(join(packed.root, rel), "utf-8")).not.toThrow();
 		}
+
+		expect(() =>
+			readFileSync(join(packed.root, "skills/centurion/SKILL.md"), "utf-8"),
+		).not.toThrow();
 	});
 
 	test("packed files are byte-identical to the source checkout", () => {
@@ -98,6 +105,12 @@ describe("packaging — installed-package discovery matches source checkout", ()
 				readFileSync(src, "utf-8"),
 			);
 		}
+
+		const skillSrc = join(REPO_ROOT, "skills/centurion/SKILL.md");
+		const skillPacked = join(packed.root, "skills/centurion/SKILL.md");
+		expect(readFileSync(skillPacked, "utf-8")).toBe(
+			readFileSync(skillSrc, "utf-8"),
+		);
 	});
 
 	test("packed rule is discoverable by the host rule loader", () => {
@@ -132,12 +145,30 @@ describe("packaging — installed-package discovery matches source checkout", ()
 				"legion-reviewer",
 				"legion-tester",
 				"legion-generalist",
+				"legion-scout",
+				"legion-decomposer",
 			]) {
 				expect(names.has(expected)).toBe(true);
 			}
 		} finally {
 			clearOmpExtensionCliRoots();
 		}
+	});
+
+	test("packed centurion skill is discovered by the host skill scanner", async () => {
+		const result = await scanSkillsFromDir(
+			{ cwd: packed.root, home: tmpHome, repoRoot: packed.root },
+			{
+				dir: join(packed.root, "skills"),
+				providerId: "legion-packaging-smoke",
+				level: "project",
+				requireDescription: true,
+			},
+		);
+		expect(result.warnings).toEqual([]);
+		const centurion = result.items.find((s) => s.name === "centurion");
+		expect(centurion).toBeDefined();
+		expect(centurion?.frontmatter?.description).toContain("legion_dispatch");
 	});
 
 	test("packed personas parse via the host agent loader (parseAgent)", () => {

@@ -13,11 +13,44 @@ export const DISPATCH_STRATEGIES = [
  * didn't). Focused -> balanced -> creative.
  */
 export const DEFAULT_TEMPERATURE_LADDER = [0.2, 0.6, 1.0] as const;
-export const DEFAULT_DECOMPOSITION_TASK_ID = "task";
-export const DEFAULT_DECOMPOSITION_AGENT = "task";
+export const DEFAULT_DECOMPOSITION_TASK_ID = "generalist";
+export const DEFAULT_DECOMPOSITION_AGENT = "generalist";
 export const DEFAULT_DECOMPOSITION_ROLE = "generalist";
 export const LEGION_AGENT_PREFIX = "legion-";
+/**
+ * The decomposition planner's persona name. Named with the `legion-` prefix
+ * so it gets bundled/project/user-override loading for free (same mechanism
+ * as every other Legion persona) and so task-tool-guard blocks it from the
+ * native `task` tool — but it must never be selectable as an ensemble
+ * attempt through legion_dispatch either: it decides *whether and how* to
+ * split a task, it isn't a candidate for being one of the split pieces. See
+ * host-dispatch-service.ts, which excludes this name from the agent-name set
+ * resolveAgentName resolves task roles against.
+ */
+export const LEGION_DECOMPOSER_AGENT_NAME = "legion-decomposer";
 export const LEGION_DISPATCH_JOB_LABEL = "legion-dispatch";
+/**
+ * Every stage `#run()` can report progress from, attached as `phase` on each
+ * `reportProgress` details payload. A structured tag the presentation layer
+ * reads directly (`details.phase === "decomposing"`), instead of the prior
+ * design of guessing from `text.includes("running")`-style substring checks
+ * against freeform prose — accidentally correct as long as no message's
+ * wording ever changed, and blind to phases (decomposition, live attempt
+ * counts) that had no distinct wording to guess from because nothing
+ * reported progress for them at all.
+ */
+export const LEGION_DISPATCH_PHASES = [
+	"decomposing",
+	"running",
+	"retrying",
+	"expanding",
+	"synthesizing",
+	"escalated",
+	"rejected",
+	"completed",
+	"failed",
+] as const;
+export type LegionDispatchPhase = (typeof LEGION_DISPATCH_PHASES)[number];
 export const LEGION_ORCHESTRATION_ENTRY_TYPE = "legion-orchestration";
 export const LEGION_PLUGIN_NAME = "omp-legion";
 export const LEGION_SETTING_KEYS = {

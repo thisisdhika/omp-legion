@@ -4,7 +4,7 @@
 	"description": "MoA-over-MoE orchestration with HOTL governance for Oh My Pi",
 	"type": "module",
 	"main": "src/index.ts",
-	"files": ["src/", "agents/", "rules/"],
+	"files": ["src/", "agents/", "rules/", "skills/"],
 	"omp": {
 		"name": "legion",
 		"version": "0.1.0",

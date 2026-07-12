@@ -7,6 +7,15 @@ describe("targetsLegionAgent", () => {
 		expect(targetsLegionAgent({ agent: "legion-coder" })).toBe(true);
 	});
 
+	// legion-decomposer is a planning-only persona (see agents/legion-decomposer.md)
+	// — it must be exactly as unreachable via the native task tool as any
+	// other legion-* persona, even though it's never dispatched as an
+	// ensemble attempt either (see host-dispatch-service.ts's exclusion from
+	// resolveAgentName's agent-name set).
+	test("blocks the decomposer persona specifically, same as any other legion-* agent", () => {
+		expect(targetsLegionAgent({ agent: "legion-decomposer" })).toBe(true);
+	});
+
 	test("blocks a batch task call if any entry targets a legion-* agent", () => {
 		expect(
 			targetsLegionAgent({

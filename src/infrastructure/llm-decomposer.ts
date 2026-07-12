@@ -10,8 +10,10 @@ import {
 } from "../domain/decomposition";
 import type { DispatchTask } from "../domain/dispatch";
 import {
+	type AvailableRole,
 	DECOMPOSER_SYSTEM_PROMPT,
 	buildDecomposerPrompt,
+	formatAvailableRoles,
 } from "./aggregator-prompts";
 import { type HostLlmOptions, completeHostLlm } from "./host-llm";
 
@@ -34,6 +36,23 @@ export type HostLlmDecomposerOptions = HostLlmOptions & {
 	readonly audit?: (event: DecomposerAuditEvent) => void;
 	/** Injectable completion fn; defaults to the real host completion. */
 	readonly complete?: typeof completeHostLlm;
+	/**
+	 * The legion-decomposer persona's system prompt (bundled, with
+	 * project/user override support — see loadAgentDefinitions and
+	 * agents/legion-decomposer.md). Falls back to the hardcoded
+	 * DECOMPOSER_SYSTEM_PROMPT when absent (e.g. bundled agent failed to
+	 * load, or a caller — a test — doesn't wire one through).
+	 */
+	readonly systemPrompt?: string;
+	/**
+	 * The real, currently-loaded dispatchable roster (bundled + any
+	 * project/user overrides or custom personas) — without this the
+	 * decomposer only ever sees a hardcoded illustrative example list and can
+	 * invent a role that doesn't match any loaded persona, which now gets the
+	 * whole dispatch rejected rather than silently substituted (see
+	 * resolveAgentName). See host-dispatch-service.ts for how this is built.
+	 */
+	readonly availableRoles?: readonly AvailableRole[];
 };
 
 function messageOf(error: unknown): string {
@@ -65,6 +84,7 @@ export class HostLlmDecomposer implements TaskDecomposer {
 	readonly #options: HostLlmDecomposerOptions;
 	readonly #complete: typeof completeHostLlm;
 	readonly #resolveModel: (selector: string) => Model<Api> | undefined;
+	readonly #systemPrompt: string[];
 
 	constructor(options: HostLlmDecomposerOptions) {
 		this.#options = options;
@@ -72,6 +92,13 @@ export class HostLlmDecomposer implements TaskDecomposer {
 		this.#resolveModel =
 			options.resolveModel ??
 			((selector) => defaultResolveModel(options.modelRegistry, selector));
+		const base = options.systemPrompt
+			? [options.systemPrompt]
+			: DECOMPOSER_SYSTEM_PROMPT;
+		const roster = options.availableRoles
+			? formatAvailableRoles(options.availableRoles)
+			: "";
+		this.#systemPrompt = roster ? [...base, roster] : base;
 	}
 
 	async decompose(input: DecompositionInput): Promise<readonly DispatchTask[]> {
@@ -122,7 +149,7 @@ export class HostLlmDecomposer implements TaskDecomposer {
 						cwd: this.#options.cwd,
 						temperature,
 					},
-					DECOMPOSER_SYSTEM_PROMPT,
+					this.#systemPrompt,
 					buildDecomposerPrompt(input),
 					input.signal,
 				);
@@ -201,7 +228,7 @@ export class HostLlmDecomposer implements TaskDecomposer {
 					modelRegistry: this.#options.modelRegistry,
 					cwd: this.#options.cwd,
 				},
-				DECOMPOSER_SYSTEM_PROMPT,
+				this.#systemPrompt,
 				buildDecomposerPrompt(input),
 				input.signal,
 			);

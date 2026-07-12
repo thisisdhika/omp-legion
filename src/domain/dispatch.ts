@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { DecomposerAuditEvent } from "./decomposition";
 
 import {
-	DEFAULT_DECOMPOSITION_AGENT,
 	DEFAULT_DISPATCH_STRATEGY,
 	DEFAULT_ENSEMBLE_SIZE,
 	DEFAULT_TEMPERATURE_LADDER,
@@ -51,26 +50,45 @@ export const dispatchTaskSchema = z.object({
 	description: z.string().trim().min(1).optional(),
 });
 
-const JOB_ID_MAX_LENGTH = 48;
-const JOB_ID_MAX_WORDS = 6;
-const FALLBACK_JOB_ID = "LegionDispatch";
-
-function capitalize(word: string): string {
-	return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-}
+// Kept short deliberately: this slug becomes the prefix of every attempt id
+// for the whole dispatch (see makeAttemptId in dispatch-service.ts's
+// #buildPlan), so "a few words to recognize which dispatch this is" beats
+// "most of the task text" — the latter made every subagent name in the
+// "Subagents" HUD list a near-duplicate wall of text.
+const JOB_ID_MAX_LENGTH = 24;
+const JOB_ID_MAX_WORDS = 3;
+const FALLBACK_JOB_ID = "legion-dispatch";
 
 /**
- * A short, human-readable PascalCase job id derived from the task text, so a
- * live escalation/IRC transcript reads "LegionAddACommentAtTheTop" instead of
- * the host's bare auto-incrementing "bg_1" — the id is otherwise meaningless
- * to a human watching the session. Falls back to "LegionDispatch" for task
+ * A short, human-readable slug id derived from the task text, so a live
+ * escalation/IRC transcript reads "legion-add-a-comment" instead of the
+ * host's bare auto-incrementing "bg_1" — the id is otherwise meaningless to
+ * a human watching the session. Hyphenated rather than PascalCase-mashed
+ * (the original "LegionAddACommentAtTheTop" shape): reading as a slug/id,
+ * not a second sentence, matters more here than reading as prose — this
+ * value sits right next to the actual task text elsewhere in the UI (see
+ * dispatch-card's "Task" section) and mashed-together words made the two
+ * hard to tell apart at a glance. Falls back to "legion-dispatch" for task
  * text with no usable word characters (e.g. pure symbols/non-Latin script).
  */
 export function humanReadableJobId(task: string): string {
 	const words = task.match(/[a-zA-Z0-9]+/g)?.slice(0, JOB_ID_MAX_WORDS);
 	if (!words || words.length === 0) return FALLBACK_JOB_ID;
-	const pascal = words.map(capitalize).join("").slice(0, JOB_ID_MAX_LENGTH);
-	return pascal ? `Legion${pascal}` : FALLBACK_JOB_ID;
+	const slug = words.join("-").toLowerCase().slice(0, JOB_ID_MAX_LENGTH);
+	return slug ? `legion-${slug}` : FALLBACK_JOB_ID;
+}
+
+/** Strips the "legion-" persona prefix for compact ids — the surrounding id already reads as Legion's (it's prefixed with the job slug), so repeating "legion-" per attempt is just noise. Non-legion fallback agents (e.g. the host's "task") pass through unchanged. */
+export function shortAgentName(agent: string): string {
+	return agent.startsWith(LEGION_AGENT_PREFIX)
+		? agent.slice(LEGION_AGENT_PREFIX.length)
+		: agent;
+}
+
+/** Last path segment of a model selector ("openrouter/tencent/hy3:free" -> "hy3:free") — enough to tell attempts apart in an id without the full provider/org routing prefix. */
+export function shortModelName(model: string): string {
+	const lastSlash = model.lastIndexOf("/");
+	return lastSlash === -1 ? model : model.slice(lastSlash + 1);
 }
 
 export const dispatchRequestSchema = z.object({
@@ -219,9 +237,14 @@ export interface OrchestrationRepository {
 }
 
 export type ModelAvailability = (selector: string) => boolean;
-export type AttemptIdFactory = (attemptIndex: number, taskId: string) => string;
-/** Resolves a sub-task's role to the host agent name that should run it. */
-export type AgentResolver = (role: string) => string;
+export type AttemptIdFactory = (
+	attemptIndex: number,
+	taskId: string,
+	agent: string,
+	model: string,
+) => string;
+/** Resolves a sub-task's role to the legion-* persona that should run it, or undefined when no such persona is loaded (see resolveAgentName — buildDispatchPlan rejects the task in that case). */
+export type AgentResolver = (role: string) => string | undefined;
 
 function availableModels(
 	policy: RoleModelPolicy | undefined,
@@ -319,19 +342,25 @@ function temperatureForAttempts(
 /**
  * Given the set of Legion agent names actually loaded (bundled + any
  * project/user override), resolve a role to the LEGION_AGENT_PREFIX-prefixed
- * persona for that role if one exists, else the safe host default. This is
- * the only place a sub-task's `agent` is decided — never trusted verbatim
- * from a caller or the LLM decomposer, both of which have no visibility into
- * which agent names are actually resolvable on this host.
+ * persona for that role if one exists. This is the only place a sub-task's
+ * `agent` is decided — never trusted verbatim from a caller or the LLM
+ * decomposer, both of which have no visibility into which agent names are
+ * actually resolvable on this host.
+ *
+ * Returns undefined (never falls back to a non-legion agent) when no
+ * matching persona is loaded — legion_dispatch's whole value is the
+ * governed ensemble (HOTL, synthesis, audit trail) around a legion-*
+ * persona; silently substituting some other agent underneath a caller who
+ * asked for a specific role isn't a safe default, it's a surprise. The
+ * caller should dispatch that task with the native `task` tool instead (see
+ * buildDispatchPlan, which turns this into that exact rejection message).
  */
 export function resolveAgentName(
 	role: string,
 	availableAgentNames: ReadonlySet<string>,
-): string {
+): string | undefined {
 	const candidate = `${LEGION_AGENT_PREFIX}${role.trim().toLowerCase()}`;
-	return availableAgentNames.has(candidate)
-		? candidate
-		: DEFAULT_DECOMPOSITION_AGENT;
+	return availableAgentNames.has(candidate) ? candidate : undefined;
 }
 /**
  * Classifies an expert attempt result for runtime model fallback. A
@@ -517,11 +546,17 @@ export function buildDispatchPlan(
 			}
 		}
 
+		const agent = resolveAgent(task.role);
+		if (!agent) {
+			throw new Error(
+				`Legion has no "${LEGION_AGENT_PREFIX}${task.role.trim().toLowerCase()}" persona for role "${task.role}" (task "${task.id}"); dispatch this task with the native \`task\` tool instead.`,
+			);
+		}
 		for (const [attemptOffset, model] of models.entries()) {
 			attempts.push({
-				id: makeAttemptId(attemptIndex, task.id),
+				id: makeAttemptId(attemptIndex, task.id, agent, model),
 				taskId: task.id,
-				agent: resolveAgent(task.role),
+				agent,
 				role: task.role,
 				assignment: task.assignment,
 				description: task.description,

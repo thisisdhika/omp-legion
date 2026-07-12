@@ -1,95 +1,344 @@
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type {
+	ExtensionContext,
+	ToolDefinition,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { Component } from "@oh-my-pi/pi-tui";
+import { Box, Text } from "@oh-my-pi/pi-tui";
 
 import type {
 	DispatchService,
 	TaskAttemptSummary,
 } from "../application/dispatch-service";
-import { dispatchRequestSchema } from "../domain/dispatch";
-import { renderDispatchResult } from "./dispatch-card";
+import {
+	LEGION_DISPATCH_PHASES,
+	type LegionDispatchPhase,
+} from "../domain/constants";
+import { dispatchRequestSchema, shortModelName } from "../domain/dispatch";
+import { boxBorder, renderDispatchResult } from "./dispatch-card";
+import { buildProgressText, spinnerChar, useSpinnerLoop } from "./spinner";
+
+/** Emitted while the background job is being monitored by the host TUI. */
+export interface LegionProgress {
+	readonly phase: string;
+	readonly frame: number;
+	readonly jobId: string;
+	readonly attemptCount: number;
+}
 
 export interface LegionDispatchDetails {
 	readonly jobId: string;
 	readonly recordId: string;
-	readonly state: "running";
+	readonly state: "running" | "completed" | "failed";
 	readonly attemptCount: number;
 	readonly attemptModels: readonly string[];
 	readonly taskBreakdown: readonly TaskAttemptSummary[];
+	readonly resultText?: string;
 }
 
 export type DispatchServiceResolver = () => DispatchService | undefined;
 
-function immediateResult(
-	details: LegionDispatchDetails,
+/**
+ * Without a `renderCall`, the host falls back to a plain `theme.bold(label)`
+ * line above every render of this tool (see tool-execution.ts) — a redundant
+ * "Legion" heading floating above our own framed card, which already has its
+ * own header. Every native tool (task included) avoids this the same way: by
+ * defining `renderCall` at all, even a no-op one, so the fallback never fires.
+ */
+const EMPTY_COMPONENT: Component = { render: () => [] };
+
+function emptyDetails(): LegionDispatchDetails {
+	return {
+		jobId: "",
+		recordId: "",
+		state: "failed",
+		attemptCount: 0,
+		attemptModels: [],
+		taskBreakdown: [],
+	};
+}
+
+function progressPartial(
+	progress: LegionProgress,
 ): AgentToolResult<LegionDispatchDetails> {
 	return {
 		content: [
 			{
 				type: "text",
-				text: `Legion dispatch scheduled as host job ${details.jobId}. Expert results will be delivered asynchronously.`,
+				text: buildProgressText(
+					progress.phase,
+					progress.frame,
+					progress.attemptCount,
+				),
 			},
 		],
-		details,
+		details: {
+			jobId: progress.jobId,
+			recordId: progress.jobId,
+			state: "running",
+			attemptCount: progress.attemptCount,
+			attemptModels: [],
+			taskBreakdown: [],
+		},
 	};
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const PHASE_LABELS: Record<LegionDispatchPhase, string> = {
+	decomposing: "DECOMPOSING",
+	running: "RUNNING",
+	retrying: "RETRYING",
+	expanding: "EXPANDING",
+	synthesizing: "SYNTHESIZING",
+	escalated: "ESCALATED",
+	rejected: "REJECTED",
+	completed: "COMPLETED",
+	failed: "FAILED",
+};
+
+function isLegionDispatchPhase(value: unknown): value is LegionDispatchPhase {
+	return (
+		typeof value === "string" &&
+		(LEGION_DISPATCH_PHASES as readonly string[]).includes(value)
+	);
+}
+
+function phaseDetail(
+	phase: LegionDispatchPhase,
+	details: Record<string, unknown> | undefined,
+): string {
+	switch (phase) {
+		case "decomposing":
+			return "deciding how to split the task";
+		case "running": {
+			const completed = details?.completed;
+			const total = details?.total;
+			return typeof completed === "number" &&
+				typeof total === "number" &&
+				total > 0
+				? `${completed}/${total} experts finished`
+				: "experts working";
+		}
+		case "retrying": {
+			const model = details?.model;
+			return typeof model === "string"
+				? `retrying on ${shortModelName(model)}`
+				: "retrying a failed attempt";
+		}
+		case "expanding": {
+			const model = details?.model;
+			return typeof model === "string"
+				? `one more attempt on ${shortModelName(model)}`
+				: "resolving escalation";
+		}
+		case "synthesizing":
+			return "merging outputs";
+		case "escalated": {
+			const reasons = details?.reasons;
+			return Array.isArray(reasons) && reasons.length > 0
+				? `waiting on a human — ${reasons.join(", ")}`
+				: "waiting on a human decision";
+		}
+		case "rejected":
+			return "human rejected — stopping";
+		case "completed":
+			return "done";
+		case "failed":
+			return "failed";
+	}
+}
+
+/**
+ * Reads the structured `phase` tag dispatch-service.ts attaches to every
+ * reportProgress call (see LegionDispatchPhase), instead of guessing from
+ * lastProgressText's prose via substring matching — accidentally correct as
+ * long as no message's wording ever changed, and blind to real detail (live
+ * attempt counts, which model a retry moved to) that the prose never
+ * mentioned in a greppable way to begin with.
+ *
+ * No progress reported yet is a real, distinct state ("QUEUED" — the job is
+ * scheduled but hasn't executed its first reportProgress call), not the same
+ * as any phase that has actually begun; the old default silently claimed
+ * "selecting experts" here even when nothing had started.
+ */
+export function describePhase(details: Record<string, unknown> | undefined): {
+	label: string;
+	detail: string;
+} {
+	const phase = isLegionDispatchPhase(details?.phase)
+		? details.phase
+		: undefined;
+	if (!phase) return { label: "QUEUED", detail: "waiting to start" };
+	return { label: PHASE_LABELS[phase], detail: phaseDetail(phase, details) };
+}
+
+function finalResult(
+	details: LegionDispatchDetails,
+	resultText?: string,
+	isError?: boolean,
+): AgentToolResult<LegionDispatchDetails> {
+	return {
+		content: resultText ? [{ type: "text", text: resultText }] : [],
+		details,
+		isError,
+	};
+}
+
+function buildDetails(
+	accepted: ReturnType<DispatchService["dispatch"]>,
+	state: LegionDispatchDetails["state"],
+	resultText?: string,
+): LegionDispatchDetails {
+	return {
+		jobId: accepted.jobId,
+		recordId: accepted.jobId,
+		state,
+		attemptCount: accepted.attemptCount,
+		attemptModels: accepted.attemptModels,
+		taskBreakdown: accepted.taskBreakdown,
+		resultText,
+	};
+}
+
+type ProgressUpdate = Parameters<
+	ToolDefinition<typeof dispatchRequestSchema, LegionDispatchDetails>["execute"]
+>[3];
+
+function monitorInBackground(
+	accepted: ReturnType<DispatchService["dispatch"]>,
+	service: DispatchService,
+	onUpdate: ProgressUpdate | undefined,
+): void {
+	if (!onUpdate) return;
+	const spinner = useSpinnerLoop(80);
+	let active = true;
+	const emit = (frame: number) => {
+		if (!active) return;
+		const job = service.getJob(accepted.jobId);
+		const { label, detail } = describePhase(job?.lastProgressDetails);
+		onUpdate(
+			progressPartial({
+				phase: `${label} — ${detail}`,
+				frame,
+				jobId: accepted.jobId,
+				attemptCount: accepted.attemptCount,
+			}),
+		);
+	};
+	spinner.start(emit);
+	void (async () => {
+		while (active) {
+			const job = service.getJob(accepted.jobId);
+			if (job?.status === "completed" || job?.status === "failed") {
+				active = false;
+				spinner.stop();
+				return;
+			}
+			await sleep(200);
+		}
+	})();
 }
 
 export function createDispatchTool(
 	resolveService: DispatchServiceResolver,
 ): ToolDefinition<typeof dispatchRequestSchema, LegionDispatchDetails> {
+	function monitorWidget(
+		accepted: ReturnType<DispatchService["dispatch"]>,
+		service: DispatchService,
+		context: ExtensionContext,
+	): void {
+		if (!context?.ui?.setWidget) return;
+		const key = `legion:${accepted.jobId}`;
+		const startedAt = Date.now();
+		const render = (frame: number, label: string, detail: string) => {
+			context.ui.setWidget(
+				key,
+				(_tui, theme) => {
+					// Task/plan/models already sit in the persisted tool-call card
+					// below; this ephemeral widget only shows what's actually live —
+					// which phase, how long, and (if reported) what's happening in it.
+					const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+					const elapsed = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`;
+					const header = `${spinnerChar(frame)} Legion | ${elapsed}`;
+					const status = `[${label}] ${detail}`;
+					const box = new Box(1, 0, undefined, boxBorder(theme, "accent"));
+					box.addChild(
+						new Text(
+							theme.fg?.("accent", theme.bold?.(header) ?? header) ?? header,
+							0,
+							0,
+						),
+					);
+					box.addChild(new Text(theme.fg?.("muted", status) ?? status, 0, 0));
+					return box;
+				},
+				{ placement: "aboveEditor" },
+			);
+		};
+		const spinner = useSpinnerLoop(80);
+		spinner.start((frame) => {
+			const { label, detail } = describePhase(
+				service.getJob(accepted.jobId)?.lastProgressDetails,
+			);
+			render(frame, label, detail);
+		});
+		void (async () => {
+			while (true) {
+				const job = service.getJob(accepted.jobId);
+				if (job?.status === "completed" || job?.status === "failed") {
+					spinner.stop();
+					context.ui.setWidget(key, undefined);
+					return;
+				}
+				await sleep(200);
+			}
+		})();
+	}
 	return {
 		name: "legion_dispatch",
 		label: "Legion",
 		description:
-			"Runs one task through several independent expert attempts in parallel and returns a single synthesized, cross-checked answer — an ensemble review, not a subagent spawner. Use it whenever a task is a judgment call where being wrong is costly and a second opinion would catch it, even if the user never asks for review or mentions this tool by name: security-sensitive changes, a subtle correctness bug, an architecture or design decision, or any moment where the right move is to sanity-check the answer before committing to it. Do not use it for routine, low-stakes work that can just be done directly — ensembling has real latency and token cost. The call returns immediately with a job id and delivers its result asynchronously, including an automatic escalation to a human if the experts disagree too much or confidence is low, so never block waiting on it. Omit tasks to let it decompose the task automatically, or supply an explicit tasks array when the natural split is already known. Never call this tool from inside a task that this tool itself dispatched — experts give one independent answer and must not spawn further ensembles.",
+			"Runs one task through several independent expert attempts in parallel and returns a single synthesized, cross-checked answer — an ensemble review, not a subagent spawner. Use it whenever a task is a judgment call where being wrong is costly and a second opinion would catch it, even if the user never asks for review or mentions this tool by name: security-sensitive changes, a subtle correctness bug, an architecture or design decision, or any moment where the right move is to sanity-check the answer before committing to it. Do not use it for routine, low-stakes work that can just be done directly — ensembling has real latency and token cost. Returns immediately with the job ID; the ensemble and any HOTL governance continue asynchronously in the background. Never call this tool from inside a task that this tool itself dispatched — experts give one independent answer and must not spawn further ensembles. Omit tasks to let it decompose the task automatically, or supply an explicit tasks array when the natural split is already known.",
 		parameters: dispatchRequestSchema,
 		approval: "exec",
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (signal?.aborted) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Legion dispatch was cancelled before scheduling.",
-						},
-					],
-				};
+				return finalResult(emptyDetails(), undefined, true);
 			}
 
 			const service = resolveService();
 			if (!service) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Legion dispatch is not ready; the session has not finished starting.",
-						},
-					],
-				};
+				return finalResult(
+					emptyDetails(),
+					"Legion dispatch is not ready; the session has not finished starting.",
+					true,
+				);
 			}
 
+			let accepted: ReturnType<DispatchService["dispatch"]>;
 			try {
-				const accepted = service.dispatch(params, toolCallId);
-				const details: LegionDispatchDetails = {
-					jobId: accepted.jobId,
-					recordId: accepted.recordId,
-					state: "running",
-					attemptCount: accepted.attemptCount,
-					attemptModels: accepted.attemptModels,
-					taskBreakdown: accepted.taskBreakdown,
-				};
-				const result = immediateResult(details);
-				onUpdate?.(result);
-				return result;
+				accepted = service.dispatch(params, _toolCallId);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return {
-					content: [
-						{ type: "text", text: `Legion dispatch rejected: ${message}` },
-					],
-				};
+				return finalResult(
+					emptyDetails(),
+					`Legion dispatch rejected: ${message}`,
+					true,
+				);
 			}
+
+			monitorWidget(accepted, service, ctx);
+			monitorInBackground(accepted, service, onUpdate);
+			return finalResult(
+				buildDetails(accepted, "running"),
+				`Legion job ${accepted.jobId} accepted and running in the background.`,
+			);
 		},
-		renderResult: (result, _options, theme, args) =>
-			renderDispatchResult(result, theme, args),
+		renderCall: () => EMPTY_COMPONENT,
+		renderResult: (result, options, theme, args) =>
+			renderDispatchResult(result, options, theme, args),
 	};
 }

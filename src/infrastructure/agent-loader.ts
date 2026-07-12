@@ -103,27 +103,3 @@ export async function loadAgentDefinitions(
 	}
 	return map;
 }
-
-/**
- * The full agent roster dispatch actually needs: every host-discoverable
- * agent (so the DEFAULT_DECOMPOSITION_AGENT="task" fallback resolves) with
- * Legion's own bundled/overridden `legion-*` personas layered on top. Use
- * this map's keys as the available-name set for resolveAgentName(), and the
- * map itself for the executor's agent lookup.
- */
-export async function loadDispatchAgents(
-	cwd: string = process.cwd(),
-	home: string = os.homedir(),
-): Promise<Map<string, AgentDefinition>> {
-	const map = new Map<string, AgentDefinition>();
-	try {
-		const { agents } = await discoverAgents(cwd, home);
-		for (const agent of agents) map.set(agent.name, agent);
-	} catch {
-		// Discovery failure — Legion's own bundled personas below still load.
-	}
-	for (const [name, agent] of await loadAgentDefinitions(cwd, home)) {
-		map.set(name, agent);
-	}
-	return map;
-}

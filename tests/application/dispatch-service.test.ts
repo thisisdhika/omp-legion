@@ -5,6 +5,7 @@ import {
 	DispatchService,
 	type ExpertExecution,
 	type ExpertExecutor,
+	type JobInfo,
 	type JobRunContext,
 	type JobScheduler,
 	type VerifyRequest,
@@ -31,6 +32,10 @@ class DeferredScheduler implements JobScheduler {
 	): string {
 		this.jobs.push(run);
 		return "job-1";
+	}
+
+	getJob(_id: string): JobInfo | undefined {
+		return undefined;
 	}
 }
 
@@ -229,8 +234,76 @@ describe("DispatchService", () => {
 		if (!job) throw new Error("Expected a scheduled job.");
 		await job(context());
 
-		expect(accepted.attemptCount).toBe(0);
+		expect(accepted.attemptCount).toBe(3);
 		expect(executor.executions[0]?.attempt.taskId).toBe("review");
+	});
+	// Regression coverage for a real incident: a live dispatch's progress
+	// widget showed "ROUTING — selecting experts" for 4+ minutes while the
+	// job was actually deep into decomposition, then running experts —
+	// because reportProgress carried no structured signal a consumer could
+	// read reliably, only freeform prose. Every reportProgress call now
+	// tags a `phase` (see LegionDispatchPhase); this locks in that each
+	// real stage of a run reports the phase it claims to be in, and that
+	// "running" carries live completed/total counts as attempts land one
+	// by one (previously a single "is running" message, then silence).
+	test("reports a structured phase — including live attempt counts — at every real stage of a run", async () => {
+		const scheduler = new DeferredScheduler();
+		const executor = new RecordingExecutor();
+		const decomposer = {
+			async decompose() {
+				return [
+					{
+						id: "review",
+						agent: "reviewer",
+						role: "reviewer",
+						assignment: "Review the change",
+					},
+				];
+			},
+		};
+		const service = new DispatchService({
+			scheduler,
+			executor,
+			decomposer,
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+		});
+
+		service.dispatch({ task: "Review the change" });
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+
+		const reported: Array<{ text: string; details?: Record<string, unknown> }> =
+			[];
+		await job({
+			jobId: "job-1",
+			signal: new AbortController().signal,
+			reportProgress: async (text, details) => {
+				reported.push({ text, details });
+			},
+		});
+
+		const phases = reported.map((r) => r.details?.phase);
+		expect(phases).toContain("decomposing");
+		expect(phases).toContain("running");
+		expect(phases).toContain("synthesizing");
+		expect(phases).toContain("completed");
+		// "decomposing" must be reported before any "running" progress, not
+		// just discoverable somewhere in the list.
+		expect(phases.indexOf("decomposing")).toBeLessThan(
+			phases.indexOf("running"),
+		);
+
+		const runningUpdates = reported.filter(
+			(r) => r.details?.phase === "running" && "completed" in (r.details ?? {}),
+		);
+		expect(runningUpdates.length).toBeGreaterThan(0);
+		const last = runningUpdates.at(-1);
+		expect(last?.details?.completed).toBe(last?.details?.total);
+		expect(last?.details?.total).toBeGreaterThan(0);
 	});
 	test("falls back to one task when decomposition fails", async () => {
 		const scheduler = new DeferredScheduler();
@@ -290,7 +363,12 @@ describe("DispatchService", () => {
 
 		expect(accepted.attemptCount).toBe(5);
 		expect(accepted.taskBreakdown).toEqual([
-			{ taskId: "review", attemptCount: 5, models: Array(5).fill("frontier") },
+			{
+				taskId: "review",
+				agent: "reviewer",
+				attemptCount: 5,
+				models: Array(5).fill("frontier"),
+			},
 		]);
 	});
 	test("runs every planned attempt with one persona and correlated model overrides", async () => {
@@ -880,6 +958,66 @@ describe("DispatchService", () => {
 		// attempt's branch (winner included) is discarded instead.
 		expect(branchMerger.merged).toHaveLength(0);
 		expect(branchMerger.discarded.flat()).toHaveLength(4);
+	});
+
+	// Regression coverage: #resolveEscalation blocks on a human decision (or
+	// the configured timeout), which can take a while — a live view had no
+	// way to distinguish "waiting on a human" from any other silent stretch
+	// until this phase was reported.
+	test("reports the escalated phase before the human decision resolves", async () => {
+		const scheduler = new DeferredScheduler();
+		const service = new DispatchService({
+			scheduler,
+			executor: new BranchingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0.8,
+				disagreementThreshold: 0.4,
+				costCeiling: 100,
+				failureRateCeiling: 0.5,
+			},
+			decisionGate: async () => ({ action: "reject" }),
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 2,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+
+		const reported: Array<{ text: string; details?: Record<string, unknown> }> =
+			[];
+		await expect(
+			job({
+				jobId: "job-1",
+				signal: new AbortController().signal,
+				reportProgress: async (text, details) => {
+					reported.push({ text, details });
+				},
+			}),
+		).rejects.toThrow();
+
+		const phases = reported.map((r) => r.details?.phase);
+		expect(phases).toContain("escalated");
+		expect(phases).toContain("rejected");
+		expect(phases.indexOf("escalated")).toBeLessThan(
+			phases.indexOf("rejected"),
+		);
+		const escalation = reported.find((r) => r.details?.phase === "escalated");
+		expect(escalation?.details?.reasons).toEqual(["confidence"]);
 	});
 
 	describe("DispatchService runtime model fallback and adaptive expansion", () => {

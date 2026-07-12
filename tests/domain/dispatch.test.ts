@@ -8,6 +8,8 @@ import {
 	nextReplacement,
 	resolveAgentName,
 	selectorKey,
+	shortAgentName,
+	shortModelName,
 } from "../../src/domain/dispatch";
 
 describe("dispatch planning", () => {
@@ -355,6 +357,66 @@ describe("dispatch planning", () => {
 			),
 		).toThrow('Duplicate dispatch task id "same".');
 	});
+
+	test("rejects a task whose role has no legion-* persona, instead of silently dispatching a non-legion agent", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Audit the security posture",
+			tasks: [
+				{
+					id: "audit",
+					agent: "security-auditor",
+					role: "security-auditor",
+					assignment: "Audit it",
+				},
+			],
+		});
+
+		expect(() =>
+			buildDispatchPlan(
+				request,
+				"active",
+				() => true,
+				(index) => `attempt-${index}`,
+				// Mirrors resolveAgentName's real contract: undefined when no
+				// legion-<role> persona is loaded.
+				() => undefined,
+			),
+		).toThrow(/dispatch this task with the native `task` tool instead/);
+	});
+
+	test("passes the resolved agent and attempt model to the id factory", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier", "fallback"],
+					strategy: "diverse",
+					ensembleSize: 2,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index, taskId, agent, model) => `${taskId}-${agent}-${model}-${index}`,
+			() => "legion-reviewer",
+		);
+
+		expect(plan.attempts.map((attempt) => attempt.id)).toEqual([
+			"review-legion-reviewer-frontier-0",
+			"review-legion-reviewer-fallback-1",
+		]);
+	});
 });
 
 describe("resolveAgentName", () => {
@@ -371,9 +433,23 @@ describe("resolveAgentName", () => {
 		expect(resolveAgentName(" Reviewer ", available)).toBe("legion-reviewer");
 	});
 
-	test("falls back to the safe host default for an unmatched role", () => {
+	test("returns undefined for an unmatched role instead of falling back to a non-legion agent", () => {
 		const available = new Set(["task", "legion-coder"]);
-		expect(resolveAgentName("security-auditor", available)).toBe("task");
+		expect(resolveAgentName("security-auditor", available)).toBeUndefined();
+	});
+
+	// legion-decomposer is bundled and loaded like any other persona, but
+	// host-dispatch-service.ts deliberately excludes it from the agent-name
+	// set passed here — it plans splits, it isn't a candidate for being one
+	// of the split pieces. Mirrors that exact filter to lock the behavior in
+	// without needing the full ExtensionContext createHostDispatchService
+	// requires.
+	test("never resolves the decomposer persona, even if a task role is literally 'decomposer'", () => {
+		const loaded = new Set(["task", "legion-coder", "legion-decomposer"]);
+		const dispatchable = new Set(
+			[...loaded].filter((name) => name !== "legion-decomposer"),
+		);
+		expect(resolveAgentName("decomposer", dispatchable)).toBeUndefined();
 	});
 });
 
@@ -381,14 +457,42 @@ describe("humanReadableJobId", () => {
 	// The host auto-assigns a bare "bg_1"-style id when none is supplied,
 	// which is meaningless to a human watching a live escalation/IRC
 	// transcript — this gives every dispatch a human-readable job id instead.
-	test("derives a PascalCase id from the task text", () => {
+	// Hyphenated slug, not PascalCase-mashed: the id sits next to the actual
+	// task text elsewhere in the UI (dispatch-card's "Task" section), and
+	// mashed-together words read as a second, garbled description of the
+	// same thing rather than an id pointing at it.
+	test("derives a hyphenated slug from the task text", () => {
 		expect(
 			humanReadableJobId("Add a comment at the top of sample-bug.js"),
-		).toBe("LegionAddACommentAtTheTop");
+		).toBe("legion-add-a-comment");
 	});
 
 	test("falls back to a generic label for unlabelable text", () => {
-		expect(humanReadableJobId("!!! 一二三 !!!")).toBe("LegionDispatch");
+		expect(humanReadableJobId("!!! 一二三 !!!")).toBe("legion-dispatch");
+	});
+});
+
+describe("shortAgentName", () => {
+	test("strips the legion- prefix", () => {
+		expect(shortAgentName("legion-coder")).toBe("coder");
+		expect(shortAgentName("legion-reviewer")).toBe("reviewer");
+	});
+
+	test("passes through a non-legion (host fallback) agent unchanged", () => {
+		expect(shortAgentName("task")).toBe("task");
+	});
+});
+
+describe("shortModelName", () => {
+	test("keeps only the last path segment", () => {
+		expect(shortModelName("openrouter/tencent/hy3:free")).toBe("hy3:free");
+		expect(shortModelName("opencode-zen/mimo-v2.5-free")).toBe(
+			"mimo-v2.5-free",
+		);
+	});
+
+	test("passes through a selector with no path segments unchanged", () => {
+		expect(shortModelName("frontier")).toBe("frontier");
 	});
 });
 

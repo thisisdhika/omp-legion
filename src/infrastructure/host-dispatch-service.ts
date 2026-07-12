@@ -19,6 +19,8 @@ import {
 	HOTL_EDIT_TITLE,
 	HOTL_EMPTY_EDIT_MESSAGE,
 	HOTL_NO_DECISION_PROVIDER_MESSAGE,
+	LEGION_AGENT_PREFIX,
+	LEGION_DECOMPOSER_AGENT_NAME,
 } from "../domain/constants";
 import { resolveAgentName } from "../domain/dispatch";
 import { SynthesisService } from "../domain/synthesis";
@@ -52,7 +54,23 @@ export function createHostDispatchService(
 		throw new Error("Legion requires an active model for aggregation.");
 
 	const sessionFile = ctx.sessionManager.getSessionFile();
-	const agentNames = new Set(agents.keys());
+	// legion-decomposer is a planning-only persona (see its own file) — it
+	// decides whether/how to split a task, it is never itself a candidate
+	// role for one of the split pieces. Excluded here so no task role can
+	// ever resolve to it through legion_dispatch's normal ensemble dispatch,
+	// on top of task-tool-guard already blocking it from the native `task`
+	// tool by name.
+	const agentNames = new Set(
+		[...agents.keys()].filter((name) => name !== LEGION_DECOMPOSER_AGENT_NAME),
+	);
+	// The decomposer needs to see this same roster (with real descriptions),
+	// not a hardcoded illustrative example list — a role it invents that
+	// doesn't match one of these gets the whole dispatch rejected (see
+	// resolveAgentName), not silently substituted.
+	const availableRoles = [...agentNames].map((name) => ({
+		role: name.slice(LEGION_AGENT_PREFIX.length),
+		description: agents.get(name)?.description ?? "",
+	}));
 	const options: DispatchServiceOptions = {
 		scheduler: new HostJobScheduler(manager),
 		executor: new HostExpertExecutor({
@@ -85,6 +103,8 @@ export function createHostDispatchService(
 			cwd: ctx.cwd,
 			policy: config.decomposer,
 			resolveModel: (selector) => ctx.models.resolve(selector),
+			systemPrompt: agents.get(LEGION_DECOMPOSER_AGENT_NAME)?.systemPrompt,
+			availableRoles,
 		}),
 		config,
 		defaultModel: activeModelSelector(ctx),

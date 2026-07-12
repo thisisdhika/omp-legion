@@ -17,7 +17,7 @@ describe("task decomposition", () => {
 		expect(tasks).toEqual([
 			{
 				id: "inspect",
-				agent: "task",
+				agent: "generalist",
 				role: "security",
 				assignment: "Inspect auth paths.",
 			},
@@ -32,14 +32,14 @@ describe("task decomposition", () => {
 			'{"tasks":[{"id":"t1","agent":"reviewer","role":"security","assignment":"Inspect auth paths."}]}',
 		);
 
-		expect(tasks[0]?.agent).toBe("task");
+		expect(tasks[0]?.agent).toBe("generalist");
 	});
 
 	test("falls back to one general task", () => {
 		expect(fallbackDecomposition("Review the change")).toEqual([
 			{
-				id: "task",
-				agent: "task",
+				id: "generalist",
+				agent: "generalist",
 				role: "generalist",
 				assignment: "Review the change",
 			},
