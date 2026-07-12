@@ -4,7 +4,7 @@ import type {
 	ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Box, Text } from "@oh-my-pi/pi-tui";
+import { Box, Container, Text } from "@oh-my-pi/pi-tui";
 
 import type {
 	DispatchService,
@@ -259,35 +259,61 @@ function monitorInBackground(
 	})();
 }
 
+/** One row's live state within the shared, multi-job widget. */
+interface JobWidgetEntry {
+	readonly jobLabel: string;
+	readonly startedAt: number;
+	label: string;
+	detail: string;
+}
+
+/**
+ * All concurrent dispatches render into this single widget key rather than
+ * one key per job. The host's own `setHookWidget` unconditionally deletes
+ * and re-inserts a key's entry into its internal `Map` on every call — even
+ * an in-place update — which pushes that key to the end of the Map's
+ * iteration order every time (confirmed in
+ * `extension-ui-controller.ts#setHookWidget`). With one widget key per job,
+ * two concurrent dispatches ticking their own spinners independently would
+ * keep leapfrogging each other in display order on every render tick.
+ * Consolidating into one shared key sidesteps that entirely: the host only
+ * ever churns one key's position, and the row order *within* that widget is
+ * ours to control — `activeJobs` is only ever `.set()` for a brand-new job
+ * id (append) or `.delete()`d on completion, never delete-then-re-add for an
+ * in-place update, so `Map` iteration order stays exactly first-appeared
+ * order for as long as a job stays active.
+ */
+const SHARED_WIDGET_KEY = "legion:jobs";
+
 export function createDispatchTool(
 	resolveService: DispatchServiceResolver,
 ): ToolDefinition<typeof dispatchRequestSchema, LegionDispatchDetails> {
-	function monitorWidget(
-		accepted: ReturnType<DispatchService["dispatch"]>,
-		service: DispatchService,
-		context: ExtensionContext,
-	): void {
+	const activeJobs = new Map<string, JobWidgetEntry>();
+
+	function renderJobs(context: ExtensionContext, frame: number): void {
 		if (!context?.ui?.setWidget) return;
-		const key = `legion:${accepted.jobId}`;
-		const startedAt = Date.now();
-		// The job's own human-readable slug, stripped of the "legion-" prefix
-		// already implied by the "Legion" widget heading — without this, two
-		// or more concurrent widgets (a genuinely multi-part dispatch fanning
-		// out into several legion_dispatch calls) render identically, and a
-		// user watching live has no way to tell which is which (confirmed
-		// live: two widgets both showing bare "Legion | 0:54").
-		const jobLabel = shortAgentName(accepted.jobId);
-		const render = (frame: number, label: string, detail: string) => {
-			context.ui.setWidget(
-				key,
-				(_tui, theme) => {
+		if (activeJobs.size === 0) {
+			context.ui.setWidget(SHARED_WIDGET_KEY, undefined);
+			return;
+		}
+		// Snapshot now rather than closing over the live, mutable `activeJobs`
+		// map: this factory may not be invoked by the host until sometime
+		// after this call returns, by which point a job could already have
+		// completed and been removed. Capturing here makes each render call
+		// deterministic for exactly the state at that moment.
+		const snapshot = [...activeJobs.values()];
+		context.ui.setWidget(
+			SHARED_WIDGET_KEY,
+			(_tui, theme) => {
+				const container = new Container();
+				for (const entry of snapshot) {
 					// Task/plan/models already sit in the persisted tool-call card
 					// below; this ephemeral widget only shows what's actually live —
 					// which phase, how long, and (if reported) what's happening in it.
-					const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+					const elapsedSec = Math.floor((Date.now() - entry.startedAt) / 1000);
 					const elapsed = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`;
-					const header = `${spinnerChar(frame)} Legion (${jobLabel}) | ${elapsed}`;
-					const status = `[${label}] ${detail}`;
+					const header = `${spinnerChar(frame)} Legion (${entry.jobLabel}) | ${elapsed}`;
+					const status = `[${entry.label}] ${entry.detail}`;
 					const box = new Box(1, 0, undefined, boxBorder(theme, "accent"));
 					box.addChild(
 						new Text(
@@ -297,17 +323,40 @@ export function createDispatchTool(
 						),
 					);
 					box.addChild(new Text(theme.fg?.("muted", status) ?? status, 0, 0));
-					return box;
-				},
-				{ placement: "aboveEditor" },
-			);
-		};
+					container.addChild(box);
+				}
+				return container;
+			},
+			{ placement: "aboveEditor" },
+		);
+	}
+
+	function monitorWidget(
+		accepted: ReturnType<DispatchService["dispatch"]>,
+		service: DispatchService,
+		context: ExtensionContext,
+	): void {
+		if (!context?.ui?.setWidget) return;
+		// The job's own human-readable slug, stripped of the "legion-" prefix
+		// already implied by the "Legion" row heading — without this, two or
+		// more concurrent rows (a genuinely multi-part dispatch fanning out
+		// into several legion_dispatch calls) render identically, and a user
+		// watching live has no way to tell which is which (confirmed live).
+		const jobLabel = shortAgentName(accepted.jobId);
+		activeJobs.set(accepted.jobId, {
+			jobLabel,
+			startedAt: Date.now(),
+			label: "QUEUED",
+			detail: "waiting to start",
+		});
+
 		let closed = false;
 		const close = () => {
 			if (closed) return;
 			closed = true;
 			spinner.stop();
-			context.ui.setWidget(key, undefined);
+			activeJobs.delete(accepted.jobId);
+			renderJobs(context, 0);
 		};
 		const spinner = useSpinnerLoop(80);
 		spinner.start((frame) => {
@@ -319,7 +368,12 @@ export function createDispatchTool(
 				close();
 				return;
 			}
-			render(frame, label, detail);
+			const entry = activeJobs.get(accepted.jobId);
+			if (entry) {
+				entry.label = label;
+				entry.detail = detail;
+			}
+			renderJobs(context, frame);
 		});
 		void (async () => {
 			while (!closed) {

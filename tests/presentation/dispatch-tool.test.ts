@@ -240,6 +240,98 @@ describe("createDispatchTool", () => {
 		expect(headerLine).toContain("review-the-following");
 	});
 
+	// Regression test for a user-reported ordering bug: concurrent dispatches
+	// used to render into separate widget keys, one per job. The host's own
+	// setHookWidget unconditionally deletes and re-inserts a key's entry into
+	// its internal Map on every single call -- even an in-place update --
+	// which pushes that key to the end of the Map's iteration order every
+	// time. With one widget key per job, two concurrent dispatches ticking
+	// their own spinners independently would keep leapfrogging each other in
+	// display order. All concurrent jobs must render into one shared widget,
+	// ordered by first-appeared order, and that order must stay stable as
+	// each job's own spinner keeps ticking independently.
+	test("keeps concurrent jobs in first-appeared order across independent spinner ticks", async () => {
+		const jobs = new Map<string, { status: "running" | "completed" }>();
+		const service = {
+			dispatch(params: { task: string }) {
+				const jobId = params.task === "first" ? "legion-alpha" : "legion-beta";
+				jobs.set(jobId, { status: "running" });
+				return {
+					jobId,
+					recordId: jobId,
+					attemptCount: 1,
+					attemptModels: ["provider/model"],
+					taskBreakdown: [],
+				};
+			},
+			getJob(jobId: string) {
+				return {
+					status: jobs.get(jobId)?.status,
+					lastProgressDetails: undefined,
+				};
+			},
+		} as unknown as DispatchService;
+		const tool = createDispatchTool(() => service);
+
+		let capturedRender:
+			| ((
+					tui: unknown,
+					theme: Theme,
+			  ) => { render: (width: number) => readonly string[] })
+			| undefined;
+		const ctx = {
+			ui: {
+				setWidget: (
+					_key: string,
+					render:
+						| ((
+								tui: unknown,
+								theme: Theme,
+						  ) => { render: (width: number) => readonly string[] })
+						| undefined,
+				) => {
+					if (render) capturedRender = render;
+				},
+			},
+		} as unknown as ExtensionContext;
+
+		await tool.execute(
+			"call-1",
+			{ task: "first", modelMap: {}, defaultEnsembleSize: 3 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		await tool.execute(
+			"call-2",
+			{ task: "second", modelMap: {}, defaultEnsembleSize: 3 },
+			undefined,
+			undefined,
+			ctx,
+		);
+
+		const readOrder = () => {
+			const lines = capturedRender?.(undefined, theme)?.render(80) ?? [];
+			const text = lines.join("\n");
+			return { alphaAt: text.indexOf("alpha"), betaAt: text.indexOf("beta") };
+		};
+
+		const initial = readOrder();
+		expect(initial.alphaAt).toBeGreaterThanOrEqual(0);
+		expect(initial.betaAt).toBeGreaterThan(initial.alphaAt);
+
+		// Let each job's independent spinner interval tick a few times (they
+		// are not synchronized with each other) and re-render repeatedly --
+		// order must stay alpha-before-beta throughout, not swap.
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		const afterTicks = readOrder();
+		expect(afterTicks.alphaAt).toBeGreaterThanOrEqual(0);
+		expect(afterTicks.betaAt).toBeGreaterThan(afterTicks.alphaAt);
+
+		jobs.set("legion-alpha", { status: "completed" });
+		jobs.set("legion-beta", { status: "completed" });
+	});
+
 	// Regression test for a live-confirmed bug: the widget's spinner tick
 	// (reading lastProgressDetails.phase) and its separate background loop
 	// (polling job.status) can disagree about whether the job is done -- a
