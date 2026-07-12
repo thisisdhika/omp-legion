@@ -57,7 +57,7 @@ src/
                        verifier.ts               execution-grounded verifyCommand runner
                        embedding-provider.ts     registry → Mnemopi → Ollama fallback chain
                        llm-aggregator.ts         Aggregator over completeHostLlm
-                       llm-decomposer.ts         TaskDecomposer over completeHostLlm
+                       llm-decomposer.ts         TaskDecomposer over runSubprocess (a real, read-only, tool-using run)
                        host-llm.ts               shared completeSimple wrapper
                        aggregator-prompts.ts     decomposer/aggregator system+user prompts
                        host-orchestration-repository.ts   durable audit persistence
@@ -404,6 +404,20 @@ tracing this: `HostExpertExecutor` previously passed no `settings` field at
 all, meaning every spawn silently discarded whatever session-level settings
 existed (`runSubprocess` falls back to a blank `Settings.isolated()` when
 given none) — not just missing temperature control specifically.
+
+### 4.1b Decomposer execution — a real, tool-using run, not a bare completion (`infrastructure/llm-decomposer.ts`)
+
+**The gap this closes:** `HostLlmDecomposer` used to call `completeHostLlm` — a bare one-shot text completion (system prompt + `buildDecomposerPrompt(input)` as the user message, nothing else). `DecompositionInput` carried only `task: string`; the decomposer had no tools and no codebase context beyond the literal task string the primary agent passed to `legion_dispatch`. A short or terse task (`"review this file"`) produced a short, narrow, context-free enhanced assignment no matter how the prompt was worded — the decomposer structurally could not add real facts it was never given, and no amount of prompt tuning could fix that (live-confirmed: user-reported thin assignments were the direct, unavoidable symptom of this gap).
+
+**The fix:** `HostLlmDecomposer` now runs the decomposer as a real subagent via the host's own `runSubprocess` (`@oh-my-pi/pi-coding-agent/task/executor`) — the same primitive `HostExpertExecutor` uses for ensemble attempts (§4.0), just **not** isolated: a read-only agent (`tools: [read, grep, glob]`, `agents/legion-decomposer.md`) has nothing to isolate against, so it runs directly against the real project at `cwd`. This lets it actually open the file(s)/symbol(s) a task names before writing an assignment, instead of enhancing from guesswork. Mechanics:
+
+- `agent: AgentDefinition` (the bundled/overridable `legion-decomposer` persona, or a built-in fallback with the same tool grant when that failed to load) replaces the old plain `systemPrompt: string` option — `runSubprocess` needs the full definition (system prompt *and* tools), not just prompt text.
+- The available-roles roster (`formatAvailableRoles`, §4.1) is threaded through `ExecutorOptions.context` — the field the host documents as "rendered into the subagent's system prompt" — rather than spliced into the agent's own `systemPrompt` string by hand.
+- The sequential multi-model retry ladder (one selector at a time, `DecomposerPolicy.models`, unchanged from before) now drives `modelOverride` on each `runSubprocess` call instead of the `model` field of a bare completion; a subprocess id is derived per attempt as `${jobId}-decomposer-${index}` (`DecompositionInput.jobId`, threaded from `JobRunContext.jobId` in `dispatch-service.ts`'s `#resolveRequest`).
+- `result.output` (the run's final text, same extraction `HostExpertExecutor` already relies on for expert answers) feeds the same `parseDecompositionResponse` JSON-tolerant parser as before — tool calls made along the way don't change the output contract, only what informs it.
+- Empty output, a nonzero exit code, or `result.error`/`result.aborted` are treated as a retryable failure (advance to the next selector) the same way a thrown completion error was before.
+
+**Unaffected by this change:** the decomposer's own persona instructions (`agents/legion-decomposer.md` — atomic-by-default bias, enhancement rules, the JSON output contract) and `DECOMPOSER_SYSTEM_PROMPT`'s fallback text, both updated to explicitly instruct investigating before enhancing rather than assuming no tools exist. `resolveAgentName`'s fail-closed role validation (§4.1) is unchanged — a role the decomposer picks still has to exactly match the real roster regardless of how it got there.
 
 ### 4.2 Native `task` tool guard (`infrastructure/task-tool-guard.ts`)
 

@@ -1,5 +1,9 @@
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 
 import type { DecomposerPolicy } from "../domain/config";
 import {
@@ -15,9 +19,30 @@ import {
 	buildDecomposerPrompt,
 	formatAvailableRoles,
 } from "./aggregator-prompts";
-import { type HostLlmOptions, completeHostLlm } from "./host-llm";
 
-export type HostLlmDecomposerOptions = HostLlmOptions & {
+/**
+ * Read-only tool grant for the built-in fallback definition (used only when
+ * the bundled agents/legion-decomposer.md persona failed to load). Mirrors
+ * that persona's own frontmatter — see the comment on `agent` below for why
+ * this matters at all.
+ */
+const FALLBACK_DECOMPOSER_TOOLS = ["read", "grep", "glob"];
+
+function fallbackAgent(): AgentDefinition {
+	return {
+		name: "legion-decomposer",
+		description: "Internal task-splitting planner (fallback definition).",
+		systemPrompt: DECOMPOSER_SYSTEM_PROMPT.join("\n\n"),
+		tools: FALLBACK_DECOMPOSER_TOOLS,
+		source: "bundled",
+	};
+}
+
+export type HostLlmDecomposerOptions = {
+	readonly cwd: string;
+	readonly modelRegistry: ModelRegistry;
+	/** Active session model, used as the sole candidate when no `policy` is configured. */
+	readonly model: Model<Api>;
 	/**
 	 * Resolved decomposer policy: an ordered list of model selectors run one at
 	 * a time. When omitted, the decomposer falls back to the active session
@@ -30,20 +55,25 @@ export type HostLlmDecomposerOptions = HostLlmOptions & {
 	 * resolution (e.g. `ctx.models.resolve`) should pass it explicitly.
 	 */
 	readonly resolveModel?: (selector: string) => Model<Api> | undefined;
-	/** Bounds total attempts; defaults to the policy's model count. */
+	/** Bounds total attempts; defaults to the candidate selector count. */
 	readonly budget?: { readonly maxAttempts?: number };
 	/** Sink for per-attempt audit events (recorded into the dispatch audit). */
 	readonly audit?: (event: DecomposerAuditEvent) => void;
-	/** Injectable completion fn; defaults to the real host completion. */
-	readonly complete?: typeof completeHostLlm;
 	/**
-	 * The legion-decomposer persona's system prompt (bundled, with
+	 * The legion-decomposer persona's full `AgentDefinition` (bundled, with
 	 * project/user override support — see loadAgentDefinitions and
-	 * agents/legion-decomposer.md). Falls back to the hardcoded
-	 * DECOMPOSER_SYSTEM_PROMPT when absent (e.g. bundled agent failed to
-	 * load, or a caller — a test — doesn't wire one through).
+	 * agents/legion-decomposer.md). Its own `tools:` grant (read/grep/glob) is
+	 * what lets the decomposer actually open the file(s) a task references
+	 * before writing assignments, instead of enhancing a bare task string
+	 * from guesswork alone — a real, previously-structural limitation: the
+	 * decomposer used to run as a bare one-shot text completion with zero
+	 * tool access and zero codebase context beyond the literal task string,
+	 * which is why its enhanced assignments read as short, narrow, and
+	 * context-free regardless of how the prompt was worded. Falls back to a
+	 * built-in definition (same tool grant, DECOMPOSER_SYSTEM_PROMPT as its
+	 * system prompt) when the bundled persona failed to load.
 	 */
-	readonly systemPrompt?: string;
+	readonly agent?: AgentDefinition;
 	/**
 	 * The real, currently-loaded dispatchable roster (bundled + any
 	 * project/user overrides or custom personas) — without this the
@@ -53,6 +83,10 @@ export type HostLlmDecomposerOptions = HostLlmOptions & {
 	 * resolveAgentName). See host-dispatch-service.ts for how this is built.
 	 */
 	readonly availableRoles?: readonly AvailableRole[];
+	/** Threaded through so the decomposer's own investigation appears in the interactive "Subagents" HUD, same as any other spawn. */
+	readonly eventBus?: ExecutorOptions["eventBus"];
+	/** Injectable subprocess runner; defaults to the real host runSubprocess. */
+	readonly runSubprocess?: typeof runSubprocess;
 };
 
 function messageOf(error: unknown): string {
@@ -82,36 +116,31 @@ function defaultResolveModel(
 
 export class HostLlmDecomposer implements TaskDecomposer {
 	readonly #options: HostLlmDecomposerOptions;
-	readonly #complete: typeof completeHostLlm;
+	readonly #runSubprocess: typeof runSubprocess;
 	readonly #resolveModel: (selector: string) => Model<Api> | undefined;
-	readonly #systemPrompt: string[];
+	readonly #agent: AgentDefinition;
 
 	constructor(options: HostLlmDecomposerOptions) {
 		this.#options = options;
-		this.#complete = options.complete ?? completeHostLlm;
+		this.#runSubprocess = options.runSubprocess ?? runSubprocess;
 		this.#resolveModel =
 			options.resolveModel ??
 			((selector) => defaultResolveModel(options.modelRegistry, selector));
-		const base = options.systemPrompt
-			? [options.systemPrompt]
-			: DECOMPOSER_SYSTEM_PROMPT;
-		const roster = options.availableRoles
-			? formatAvailableRoles(options.availableRoles)
-			: "";
-		this.#systemPrompt = roster ? [...base, roster] : base;
+		this.#agent = options.agent ?? fallbackAgent();
 	}
 
 	async decompose(input: DecompositionInput): Promise<readonly DispatchTask[]> {
 		const policy = this.#options.policy;
-		if (!policy || policy.models.length === 0) {
-			return this.#legacyDecompose(input);
-		}
+		const selectors =
+			policy && policy.models.length > 0
+				? policy.models
+				: [`${this.#options.model.provider}/${this.#options.model.id}`];
+		const temperatureLadder = policy?.temperatureLadder ?? [];
+		const maxAttempts = this.#options.budget?.maxAttempts ?? selectors.length;
 
-		const maxAttempts =
-			this.#options.budget?.maxAttempts ?? policy.models.length;
 		const attempted = new Set<string>();
 		let index = 0;
-		for (const selector of policy.models) {
+		for (const selector of selectors) {
 			if (input.signal?.aborted) {
 				this.#record(input, {
 					selector,
@@ -126,7 +155,9 @@ export class HostLlmDecomposer implements TaskDecomposer {
 			attempted.add(selector);
 
 			const temperature =
-				policy.temperatureLadder[index % policy.temperatureLadder.length];
+				temperatureLadder.length > 0
+					? temperatureLadder[index % temperatureLadder.length]
+					: undefined;
 			const model = this.#resolveModel(selector);
 			if (!model) {
 				this.#record(input, {
@@ -142,17 +173,7 @@ export class HostLlmDecomposer implements TaskDecomposer {
 
 			let output: string;
 			try {
-				output = await this.#complete(
-					{
-						model,
-						modelRegistry: this.#options.modelRegistry,
-						cwd: this.#options.cwd,
-						temperature,
-					},
-					this.#systemPrompt,
-					buildDecomposerPrompt(input),
-					input.signal,
-				);
+				output = await this.#runOnce(input, selector, index, temperature);
 			} catch (error) {
 				if (input.signal?.aborted) {
 					this.#record(input, {
@@ -187,8 +208,8 @@ export class HostLlmDecomposer implements TaskDecomposer {
 				continue;
 			}
 
-			// Completion succeeded: a parse/validation failure is a task-level
-			// error and must NOT advance to the next model.
+			// Run succeeded: a parse/validation failure is a task-level error and
+			// must NOT advance to the next model.
 			try {
 				const tasks = parseDecompositionResponse(output);
 				this.#record(input, {
@@ -215,38 +236,56 @@ export class HostLlmDecomposer implements TaskDecomposer {
 		);
 	}
 
-	/** Legacy single-model fallback when no decomposer policy is configured. */
-	async #legacyDecompose(
+	/**
+	 * Runs the decomposer as a real, tool-using subagent (not a bare
+	 * completion) — a non-isolated `runSubprocess` call, since a read-only
+	 * agent has nothing to isolate against. The roster (`availableRoles`) is
+	 * threaded through `context`, the one `ExecutorOptions` field documented
+	 * as "rendered into the subagent's system prompt", so it doesn't need to
+	 * be spliced into the agent's own `systemPrompt` string by hand.
+	 */
+	async #runOnce(
 		input: DecompositionInput,
-	): Promise<readonly DispatchTask[]> {
-		const model = this.#options.model;
-		const selector = `${model.provider}/${model.id}`;
-		const run = async (): Promise<readonly DispatchTask[]> => {
-			const output = await this.#complete(
-				{
-					model,
-					modelRegistry: this.#options.modelRegistry,
-					cwd: this.#options.cwd,
-				},
-				this.#systemPrompt,
-				buildDecomposerPrompt(input),
-				input.signal,
-			);
-			return parseDecompositionResponse(output);
-		};
-		try {
-			const tasks = await run();
-			this.#record(input, { selector, index: 0, status: "success" });
-			return tasks;
-		} catch (error) {
-			this.#record(input, {
-				selector,
-				index: 0,
-				status: input.signal?.aborted ? "cancelled" : "retryable-failure",
-				error: messageOf(error),
-			});
-			throw error;
+		selector: string,
+		index: number,
+		temperature: number | undefined,
+	): Promise<string> {
+		const roster = this.#options.availableRoles
+			? formatAvailableRoles(this.#options.availableRoles)
+			: "";
+		const jobId = input.jobId ?? "legion-decompose";
+		const id = `${jobId}-decomposer-${index}`;
+		const prompt = buildDecomposerPrompt(input);
+		const result = await this.#runSubprocess({
+			cwd: this.#options.cwd,
+			agent: this.#agent,
+			task: prompt,
+			assignment: prompt,
+			index,
+			id,
+			modelOverride: selector,
+			context: roster || undefined,
+			eventBus: this.#options.eventBus,
+			signal: input.signal,
+			detached: true,
+			settings: Settings.isolated(
+				temperature !== undefined ? { temperature } : {},
+			),
+		});
+		if (result.aborted) {
+			throw new Error(result.error ?? "Decomposer subprocess aborted.");
 		}
+		if (result.exitCode !== 0 || result.error) {
+			throw new Error(
+				result.error ||
+					result.stderr ||
+					`Decomposer subprocess exited ${result.exitCode}.`,
+			);
+		}
+		if (!result.output || result.output.trim().length === 0) {
+			throw new Error("Decomposer subprocess returned no output.");
+		}
+		return result.output;
 	}
 
 	#record(

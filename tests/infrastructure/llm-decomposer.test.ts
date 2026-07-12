@@ -2,14 +2,21 @@ import { describe, expect, test } from "bun:test";
 
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import type {
+	ExecutorOptions,
+	runSubprocess,
+} from "@oh-my-pi/pi-coding-agent/task/executor";
+import type {
+	AgentDefinition,
+	SingleResult,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 
 import type { DecomposerPolicy } from "../../src/domain/config";
 import type { DecomposerAuditEvent } from "../../src/domain/decomposition";
 import { DECOMPOSER_SYSTEM_PROMPT } from "../../src/infrastructure/aggregator-prompts";
-import type { HostLlmOptions } from "../../src/infrastructure/host-llm";
 import { HostLlmDecomposer } from "../../src/infrastructure/llm-decomposer";
 
-type Behavior = "ok" | "fail" | "empty";
+type Behavior = "ok" | "fail" | "empty" | "no-output";
 
 const SUCCESS_JSON = '{"tasks":[{"id":"t1","role":"coder","assignment":"x"}]}';
 
@@ -22,32 +29,54 @@ const stubRegistry = {
 	resolver: () => () => "key",
 } as unknown as ModelRegistry;
 
-type CompleteFn = (
-	options: HostLlmOptions,
-	systemPrompt: string[],
-	prompt: string,
-	signal?: AbortSignal,
-) => Promise<string>;
+const stubAgent: AgentDefinition = {
+	name: "legion-decomposer",
+	description: "test double",
+	systemPrompt: "test system prompt",
+	tools: ["read", "grep", "glob"],
+	source: "bundled",
+};
 
-function makeComplete(behaviors: Record<string, Behavior>) {
+function makeResult(overrides: Partial<SingleResult>): SingleResult {
+	return {
+		index: 0,
+		id: "id",
+		agent: "legion-decomposer",
+		agentSource: "bundled",
+		task: "task",
+		exitCode: 0,
+		output: SUCCESS_JSON,
+		stderr: "",
+		truncated: false,
+		durationMs: 1,
+		tokens: 1,
+		requests: 1,
+		...overrides,
+	};
+}
+
+type RunFn = typeof runSubprocess;
+
+function makeRunSubprocess(behaviors: Record<string, Behavior>) {
 	let inFlight = 0;
 	let maxInFlight = 0;
 	const calls: string[] = [];
-	const complete: CompleteFn = async (options, _system, _prompt, signal) => {
-		if (signal?.aborted) throw new Error("aborted by signal");
+	const run: RunFn = async (options: ExecutorOptions) => {
+		if (options.signal?.aborted) throw new Error("aborted by signal");
 		inFlight += 1;
 		maxInFlight = Math.max(maxInFlight, inFlight);
 		await Promise.resolve();
 		inFlight -= 1;
-		const id = options.model.id;
-		calls.push(id);
-		const behavior = behaviors[id] ?? "ok";
-		if (behavior === "fail") throw new Error(`provider error for ${id}`);
-		if (behavior === "empty") return '{"tasks":[]}';
-		return SUCCESS_JSON;
+		const selector = options.modelOverride as string;
+		calls.push(selector);
+		const behavior = behaviors[selector] ?? "ok";
+		if (behavior === "fail") throw new Error(`provider error for ${selector}`);
+		if (behavior === "empty") return makeResult({ output: '{"tasks":[]}' });
+		if (behavior === "no-output") return makeResult({ output: "" });
+		return makeResult({ output: SUCCESS_JSON });
 	};
 	return {
-		complete,
+		run,
 		calls: () => calls,
 		maxInFlight: () => maxInFlight,
 	};
@@ -60,7 +89,7 @@ function makeDecomposer(opts: {
 	budget?: { maxAttempts?: number };
 	activeId?: string;
 }) {
-	const { complete, calls, maxInFlight } = makeComplete(opts.behaviors);
+	const { run, calls, maxInFlight } = makeRunSubprocess(opts.behaviors);
 	const auditEvents: DecomposerAuditEvent[] = [];
 	const decomposer = new HostLlmDecomposer({
 		model: fakeModel(opts.activeId ?? "active"),
@@ -70,7 +99,8 @@ function makeDecomposer(opts: {
 		resolveModel: opts.resolveModel ?? ((selector) => fakeModel(selector)),
 		budget: opts.budget,
 		audit: (event) => auditEvents.push(event),
-		complete,
+		agent: stubAgent,
+		runSubprocess: run,
 	});
 	return { decomposer, auditEvents, calls, maxInFlight };
 }
@@ -157,6 +187,16 @@ describe("HostLlmDecomposer sequential fallback", () => {
 		expect(calls()).toEqual(["bad"]); // good never attempted
 	});
 
+	test("treats a subagent run that produced no output as a retryable failure", async () => {
+		const { decomposer, calls } = makeDecomposer({
+			policy: { models: ["silent", "good"], temperatureLadder: [0.2] },
+			behaviors: { silent: "no-output", good: "ok" },
+		});
+		const tasks = await decomposer.decompose({ task: "do" });
+		expect(tasks[0]?.id).toBe("t1");
+		expect(calls()).toEqual(["silent", "good"]);
+	});
+
 	test("records an unavailable selector and moves on", async () => {
 		const { decomposer, auditEvents, calls } = makeDecomposer({
 			policy: { models: ["missing", "good"], temperatureLadder: [0.2] },
@@ -176,11 +216,11 @@ describe("HostLlmDecomposer sequential fallback", () => {
 	test("falls back to the active session model when no policy is configured", async () => {
 		const { decomposer, auditEvents, calls } = makeDecomposer({
 			activeId: "activesession",
-			behaviors: { activesession: "ok" },
+			behaviors: { "prov/activesession": "ok" },
 		});
 		const tasks = await decomposer.decompose({ task: "do" });
 		expect(tasks[0]?.id).toBe("t1");
-		expect(calls()).toEqual(["activesession"]);
+		expect(calls()).toEqual(["prov/activesession"]);
 		expect(auditEvents[0]).toMatchObject({
 			selector: "prov/activesession",
 			status: "success",
@@ -188,62 +228,65 @@ describe("HostLlmDecomposer sequential fallback", () => {
 	});
 });
 
-describe("HostLlmDecomposer systemPrompt option", () => {
-	// The real prompt comes from the bundled/overridable
+describe("HostLlmDecomposer agent/roster wiring", () => {
+	// The real agent definition comes from the bundled/overridable
 	// agents/legion-decomposer.md persona (see host-dispatch-service.ts) —
-	// this locks in that HostLlmDecomposer actually sends whatever prompt it
-	// was given, rather than always using the hardcoded fallback constant.
-	function captureSystemPrompt() {
-		const seen: string[][] = [];
-		const complete = async (
-			_options: HostLlmOptions,
-			systemPrompt: string[],
-		): Promise<string> => {
-			seen.push(systemPrompt);
-			return SUCCESS_JSON;
+	// this locks in that HostLlmDecomposer actually runs whatever agent it
+	// was given (systemPrompt AND tools), rather than a hardcoded fallback.
+	function captureRunOptions() {
+		const seen: ExecutorOptions[] = [];
+		const run: RunFn = async (options: ExecutorOptions) => {
+			seen.push(options);
+			return makeResult({ output: SUCCESS_JSON });
 		};
-		return { complete, seen };
+		return { run, seen };
 	}
 
-	test("uses the injected agent systemPrompt when provided", async () => {
-		const { complete, seen } = captureSystemPrompt();
-		const decomposer = new HostLlmDecomposer({
-			model: fakeModel("active"),
-			modelRegistry: stubRegistry,
-			cwd: "/tmp",
+	test("runs the injected agent definition, tools and all", async () => {
+		const { run, seen } = captureRunOptions();
+		const customAgent: AgentDefinition = {
+			name: "legion-decomposer",
+			description: "custom",
 			systemPrompt: "custom project-overridden decomposer instructions",
-			complete,
-		});
-
-		await decomposer.decompose({ task: "do" });
-
-		expect(seen).toEqual([
-			["custom project-overridden decomposer instructions"],
-		]);
-	});
-
-	test("falls back to the hardcoded default when no systemPrompt is provided", async () => {
-		const { complete, seen } = captureSystemPrompt();
+			tools: ["read", "grep", "glob"],
+			source: "project",
+		};
 		const decomposer = new HostLlmDecomposer({
 			model: fakeModel("active"),
 			modelRegistry: stubRegistry,
 			cwd: "/tmp",
-			complete,
+			agent: customAgent,
+			runSubprocess: run,
 		});
 
 		await decomposer.decompose({ task: "do" });
 
-		expect(seen[0]?.length).toBeGreaterThan(1);
-		expect(seen[0]?.join(" ")).toContain("split");
+		expect(seen[0]?.agent).toBe(customAgent);
 	});
 
-	test("appends the real available-roles roster as an additional system block", async () => {
-		const { complete, seen } = captureSystemPrompt();
+	test("falls back to a built-in agent (with read/grep/glob) when none is provided", async () => {
+		const { run, seen } = captureRunOptions();
 		const decomposer = new HostLlmDecomposer({
 			model: fakeModel("active"),
 			modelRegistry: stubRegistry,
 			cwd: "/tmp",
-			complete,
+			runSubprocess: run,
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		const agent = seen[0]?.agent;
+		expect(agent?.tools).toEqual(["read", "grep", "glob"]);
+		expect(agent?.systemPrompt).toContain(DECOMPOSER_SYSTEM_PROMPT[0]);
+	});
+
+	test("threads the real available-roles roster through as executor context", async () => {
+		const { run, seen } = captureRunOptions();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			runSubprocess: run,
 			availableRoles: [
 				{ role: "coder", description: "Implementation specialist." },
 				{ role: "security-auditor", description: "Custom project persona." },
@@ -252,29 +295,36 @@ describe("HostLlmDecomposer systemPrompt option", () => {
 
 		await decomposer.decompose({ task: "do" });
 
-		const blocks = seen[0] ?? [];
-		expect(blocks.some((block) => block.includes("security-auditor"))).toBe(
-			true,
-		);
-		expect(
-			blocks.some((block) => block.includes("Custom project persona.")),
-		).toBe(true);
+		expect(seen[0]?.context).toContain("security-auditor");
+		expect(seen[0]?.context).toContain("Custom project persona.");
 	});
 
-	test("doesn't append an empty roster block when no roles are available", async () => {
-		const { complete, seen } = captureSystemPrompt();
+	test("doesn't set an empty context block when no roles are available", async () => {
+		const { run, seen } = captureRunOptions();
 		const decomposer = new HostLlmDecomposer({
 			model: fakeModel("active"),
 			modelRegistry: stubRegistry,
 			cwd: "/tmp",
-			complete,
+			runSubprocess: run,
 			availableRoles: [],
 		});
 
 		await decomposer.decompose({ task: "do" });
 
-		// Same block count as the hardcoded default alone — an empty roster
-		// must not add a stray empty system block.
-		expect(seen[0]?.length).toBe(DECOMPOSER_SYSTEM_PROMPT.length);
+		expect(seen[0]?.context).toBeUndefined();
+	});
+
+	test("derives a stable subprocess id from the job id", async () => {
+		const { run, seen } = captureRunOptions();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			runSubprocess: run,
+		});
+
+		await decomposer.decompose({ task: "do", jobId: "legion-review-src" });
+
+		expect(seen[0]?.id).toBe("legion-review-src-decomposer-0");
 	});
 });

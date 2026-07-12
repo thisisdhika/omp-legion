@@ -531,6 +531,7 @@ export class DispatchService {
 				task: request.task,
 				signal: context.signal,
 				onAudit: (event) => decomposerAttempts.push(event),
+				jobId: context.jobId,
 			});
 			if (tasks && tasks.length > 0) return { ...request, tasks: [...tasks] };
 		} catch (error) {

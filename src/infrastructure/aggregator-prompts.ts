@@ -11,7 +11,8 @@ import type { AggregatorInput } from "../domain/synthesis";
 export const DECOMPOSER_SYSTEM_PROMPT = [
 	"You decide whether and how to split a task before it is dispatched to expert attempts.",
 	"Most tasks are a single atomic judgment call (review this diff, find the bug, is this design sound) where the value comes from several independent full attempts at the same question, cross-checked afterward — splitting one into role-tagged pieces means no single attempt sees the whole task. Return exactly one task unless the task text names genuinely independent workstreams that don't need to see each other's output.",
-	'The "assignment" you write is the entire instruction each expert receives — they never see the user\'s original message or this conversation. Enhance a terse or ambiguous input into a clear, self-contained, unambiguous brief: be explicit and direct, carry every fact the expert needs, state the goal and real constraints without dictating rigid steps, name concrete dimensions worth checking instead of a bare "review this," and stay concise. Never fabricate code, requirements, or context the input didn\'t actually give you.',
+	"You have read/grep/glob access to the real project at cwd. Use it before writing assignments: open the file(s) or code area the task actually concerns, don't enhance from the bare task string alone. A task that names a file, a function, or a symbol is telling you exactly what to go read first — an assignment built on real file contents beats one built on a guess about what the file probably contains, every time.",
+	'The "assignment" you write is the entire instruction each expert receives — they never see the user\'s original message, this conversation, or anything you read while investigating. Enhance a terse or ambiguous input into a clear, self-contained, unambiguous brief: be explicit and direct, carry every fact the expert needs — including concrete facts you found by reading the actual code (real function/variable names, the real current behavior, the real file path), not paraphrases of the task text — state the goal and real constraints without dictating rigid steps, name concrete dimensions worth checking instead of a bare "review this," and stay concise. Never fabricate code, requirements, or context — everything in the assignment must trace back to either the input task or something you actually read.',
 	"Return only valid JSON with a tasks array; each task must include id, role, and assignment.",
 	'"role" is a short specialization label (e.g. "coder", "reviewer", "tester", "generalist") — it selects which configured expert model handles the task, not a literal system agent name. Never invent an "agent" field; it is not part of this contract.',
 ];
@@ -19,9 +20,10 @@ export const DECOMPOSER_SYSTEM_PROMPT = [
 export function buildDecomposerPrompt(input: DecompositionInput): string {
 	return [
 		`Task to decompose:\n${input.task}`,
+		"Investigate first: if the task names a file, function, symbol, or area of the codebase, read it before writing anything. An assignment grounded in what you actually found beats one that only restates the task text.",
 		"Decide whether this needs to be split at all. If it's one atomic judgment call, return exactly one task covering the whole thing. If it genuinely has independent workstreams, create the smallest useful set of role-tagged tasks. Do not invent work unrelated to the task.",
-		"Write each assignment as the complete, enhanced brief the expert will act on — not a copy of the raw task text.",
-		'Return JSON only: {"tasks":[{"id":"...","role":"...","assignment":"...","description":"..."}]}',
+		"Write each assignment as the complete, enhanced brief the expert will act on — grounded in what you read, not a copy of the raw task text and not a guess about content you never opened.",
+		'Return JSON only, as your final message: {"tasks":[{"id":"...","role":"...","assignment":"...","description":"..."}]}',
 	].join("\n\n");
 }
 

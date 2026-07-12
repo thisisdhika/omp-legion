@@ -32,6 +32,8 @@ export interface DecompositionInput {
 	readonly task: string;
 	readonly signal?: AbortSignal;
 	readonly onAudit?: (event: DecomposerAuditEvent) => void;
+	/** The dispatch job this decomposition belongs to, used to derive a stable subprocess id when the decomposer runs as a real (tool-using) subagent. Undefined in tests/callers that don't care about id stability. */
+	readonly jobId?: string;
 }
 
 export interface TaskDecomposer {
