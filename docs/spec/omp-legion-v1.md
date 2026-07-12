@@ -90,13 +90,25 @@ Legion persists only genuinely Legion-owned composite data, keyed against the ho
 
 ## 9. Config surface (v1, deliberately small)
 
-- **Per-role `modelMap`** — list of models per role, driving self-consistency sampling (§5) and any deliberate multi-model diversity.
-- **HOTL thresholds** — confidence floor, disagreement threshold, cost ceiling. The actual governance knobs behind §7's async notification.
-- **Ensemble size N** per role — small default (e.g. 3), not "maximize free-tier usage."
-- **Embedding provider settings** (`embed.baseUrl`/`apiKey`/`model`) — the Ollama fallback tier, now load-bearing per §6, not just a nicety.
-**Implementation status:** These settings are loaded once per session through the host plugin-settings API, merged with centralized Legion defaults, and injected into the session-scoped dispatch service. The embedding provider uses the configured model selector for the registry tier before Mnemopi and Ollama fallback. `modelMap` also accepts a JSON string for host settings UI compatibility.
+- **Per-role `modelMap`** — ordered model candidates, strategy, temperature
+  ladder, and ensemble size.
+- **`decomposer` policy** — an independent ordered `models` array and optional
+  `temperatureLadder`; it never accepts `strategy` or `ensembleSize`.
+- **HOTL thresholds** — confidence floor, disagreement threshold, cost ceiling,
+  and failure-rate ceiling.
+- **Embedding provider settings** (`embed.baseUrl`/`apiKey`/`model`).
 
-**Explicitly not reintroduced:** the old `escalationMode`/mode-preset toggle system. Escalation is always async-notification (§7) — a mode toggle over one behavior is an option with nothing behind it.
+Configuration is resolved with explicit precedence:
+`defaults < global ~/.omp/agent/config.yml < project .omp/config.yml <
+plugin overrides < per-request values`. Nested objects deep-merge by field,
+and invalid values produce a diagnostic with safe fallback behavior. The host
+adapter reads `config.legion` from the normal global/project YAML locations
+and merges it with OMP plugin settings.
+
+The decomposer runs exactly one model at a time. Retryable provider failures
+advance to the next unattempted selector; validation/task failures stop the
+sequence. Without a decomposer policy, the active session model remains the
+compatibility fallback.
 
 ## 10. Non-goals for v1
 

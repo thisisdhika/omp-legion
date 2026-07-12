@@ -12,6 +12,7 @@ export interface HostLlmOptions {
 	readonly model: Model<Api>;
 	readonly modelRegistry: ModelRegistry;
 	readonly cwd: string;
+	readonly temperature?: number;
 }
 
 function responseText(
@@ -41,6 +42,7 @@ export async function completeHostLlm(
 		apiKey: options.modelRegistry.resolver(options.model),
 		cwd: options.cwd,
 		disableReasoning: AGGREGATOR_DISABLE_REASONING,
+		temperature: options.temperature,
 		signal,
 	});
 	if (response.stopReason === "error" || response.stopReason === "aborted") {

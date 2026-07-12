@@ -8,6 +8,7 @@ import {
 	DEFAULT_HOTL_THRESHOLDS,
 	DEFAULT_MAX_CONCURRENT_EXPERTS,
 	DEFAULT_MODEL_MAP,
+	DEFAULT_TEMPERATURE_LADDER,
 	MAX_ENSEMBLE_SIZE,
 	MIN_ENSEMBLE_SIZE,
 } from "./constants";
@@ -26,6 +27,37 @@ const roleModelInputSchema = z.object({
 		.max(MAX_ENSEMBLE_SIZE)
 		.optional(),
 });
+/**
+ * The decomposer always runs exactly one model at a time — it is an
+ * independent sequential policy, NOT the expert role map. It therefore
+ * exposes only an ordered `models` list and an optional `temperatureLadder`;
+ * `strategy`/`ensembleSize` are expert-only concepts that don't apply to a
+ * single-model-at-a-time loop, so the input schema is `.strict()` to reject
+ * them with a clear diagnostic rather than silently ignoring them.
+ */
+const decomposerInputSchema = z
+	.object({
+		// Allow inline `//` documentation comments (the project's config
+		// convention) without silently swallowing real policy keys.
+		"//": z.string().optional(),
+		models: z.array(z.string().trim().min(1)).min(1),
+		temperatureLadder: z.array(z.number().min(0).max(2)).min(1).optional(),
+	})
+	.strict();
+
+/**
+ * Resolved decomposer policy. `temperatureLadder` defaults to the shared
+ * ladder so sequential attempts use focused -> balanced -> creative sampling
+ * (see DEFAULT_TEMPERATURE_LADDER) unless the config overrides it.
+ */
+export const decomposerSchema = z.object({
+	models: z.array(z.string().trim().min(1)).min(1),
+	temperatureLadder: z
+		.array(z.number().min(0).max(2))
+		.min(1)
+		.default([...DEFAULT_TEMPERATURE_LADDER]),
+});
+export type DecomposerPolicy = z.infer<typeof decomposerSchema>;
 type RoleModelConfigInput = z.infer<typeof roleModelInputSchema>;
 
 /**
@@ -71,6 +103,7 @@ const legionConfigInputSchema = z.object({
 	maxConcurrentExperts: z.number().int().min(1).optional(),
 	verifyCommand: z.string().trim().min(1).optional(),
 	decisionTimeoutMs: z.number().int().min(1).optional(),
+	decomposer: decomposerInputSchema.optional(),
 });
 
 export const legionConfigSchema = z.object({
@@ -116,6 +149,7 @@ export const legionConfigSchema = z.object({
 		.int()
 		.min(1)
 		.default(DEFAULT_DECISION_TIMEOUT_MS),
+	decomposer: decomposerSchema.optional(),
 });
 
 export type LegionConfig = z.infer<typeof legionConfigSchema>;
@@ -137,6 +171,12 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 			},
 		]),
 	);
+	const decomposer = raw.decomposer
+		? decomposerSchema.parse({
+				models: raw.decomposer.models,
+				temperatureLadder: raw.decomposer.temperatureLadder,
+			})
+		: undefined;
 	return legionConfigSchema.parse({
 		modelMap,
 		hotl: {
@@ -152,5 +192,71 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 			raw.maxConcurrentExperts ?? DEFAULT_MAX_CONCURRENT_EXPERTS,
 		verifyCommand: raw.verifyCommand,
 		decisionTimeoutMs: raw.decisionTimeoutMs ?? DEFAULT_DECISION_TIMEOUT_MS,
+		decomposer,
 	});
+}
+
+/**
+ * Precedence layers for Legion configuration resolution.
+ *
+ * Order matters: each later layer deep-merges over the earlier ones, so the
+ * effective precedence (lowest -> highest) is:
+ *   global -> project -> pluginOverride -> request
+ * Nested objects (modelMap, hotl, embedding, decomposer) merge by field so a
+ * partial override composes with unrelated config instead of replacing it.
+ *
+ * Note on sources: the host's third-party-plugin config surface is
+ * `getPluginSettings` (project `.omp/plugin-overrides.json` over the global
+ * plugin lock). Arbitrary `config.legion` keys in `config.yml` are not
+ * exposed through a stable host API, so they are NOT read here; the
+ * plugin-override layer carries whatever the host delivered (which already
+ * composes global + project plugin overrides with project winning).
+ */
+export interface LegionConfigLayers {
+	readonly global?: unknown;
+	readonly project?: unknown;
+	readonly pluginOverride?: unknown;
+	readonly request?: unknown;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null) return false;
+	if (Array.isArray(value)) return false;
+	return true;
+}
+
+/**
+ * Deep-merge `override` over `base`. Plain objects recurse field-by-field;
+ * arrays and scalars replace. `undefined` entries are dropped so a partial
+ * override doesn't clobber an existing value with `undefined` (mirrors
+ * `withoutUndefined` in mergeLegionConfig).
+ */
+function deepMerge(base: unknown, override: unknown): unknown {
+	if (override === undefined) return base;
+	if (!isPlainObject(base) || !isPlainObject(override)) return override;
+	const result: Record<string, unknown> = { ...base };
+	for (const [key, value] of Object.entries(override)) {
+		if (value === undefined) continue;
+		result[key] = deepMerge(base[key], value);
+	}
+	return result;
+}
+
+/**
+ * Resolve Legion configuration from ordered precedence layers with deep field
+ * merges, then validate and fill defaults. Throws a clear Zod diagnostic on
+ * invalid values (e.g. a decomposer policy carrying `strategy`/`ensembleSize`).
+ */
+export function resolveLegionConfig(layers: LegionConfigLayers): LegionConfig {
+	const ordered = [
+		layers.global,
+		layers.project,
+		layers.pluginOverride,
+		layers.request,
+	].filter((layer) => layer != null);
+	const merged = ordered.reduce<Record<string, unknown>>(
+		(acc, layer) => deepMerge(acc, layer) as Record<string, unknown>,
+		{},
+	);
+	return mergeLegionConfig(merged);
 }

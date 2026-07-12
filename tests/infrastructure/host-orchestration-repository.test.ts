@@ -41,13 +41,28 @@ describe("HostOrchestrationRepository", () => {
 		const journal = new SessionJournal();
 		const first = new HostOrchestrationRepository(journal);
 		first.create(runningRecord());
-		first.complete("job-1", [], [], [], 200, [
-			{
-				taskId: "task-1",
-				action: "edit",
-				note: "Keep the guard before access.",
-			},
-		]);
+		first.complete(
+			"job-1",
+			[],
+			[],
+			[],
+			200,
+			[
+				{
+					taskId: "task-1",
+					action: "edit",
+					note: "Keep the guard before access.",
+				},
+			],
+			[
+				{
+					selector: "provider/model",
+					index: 0,
+					status: "success",
+					timestamp: 150,
+				},
+			],
+		);
 
 		const afterRestart = new HostOrchestrationRepository(journal);
 		const restored = afterRestart.get("job-1");
@@ -59,6 +74,14 @@ describe("HostOrchestrationRepository", () => {
 				taskId: "task-1",
 				action: "edit",
 				note: "Keep the guard before access.",
+			},
+		]);
+		expect(restored?.decomposerAttempts).toEqual([
+			{
+				selector: "provider/model",
+				index: 0,
+				status: "success",
+				timestamp: 150,
 			},
 		]);
 	});

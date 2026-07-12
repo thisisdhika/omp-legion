@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import {
 	buildDispatchPlan,
+	classifyFailure,
 	dispatchRequestSchema,
 	humanReadableJobId,
+	nextReplacement,
 	resolveAgentName,
+	selectorKey,
 } from "../../src/domain/dispatch";
 
 describe("dispatch planning", () => {
@@ -76,6 +79,30 @@ describe("dispatch planning", () => {
 			"general",
 			"security",
 		]);
+	});
+
+	test("retains unavailable configured candidates for runtime fallback", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+			modelMap: {
+				reviewer: {
+					models: ["a", "b", "c"],
+					strategy: "diverse",
+					ensembleSize: 2,
+				},
+			},
+		});
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			(model) => model !== "c",
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts.map((attempt) => attempt.model)).toEqual(["a", "b"]);
+		expect(plan.attempts[0]?.candidates).toEqual(["a", "b", "c"]);
 	});
 
 	test("uses the active model when a role has no explicit mapping", () => {
@@ -362,5 +389,128 @@ describe("humanReadableJobId", () => {
 
 	test("falls back to a generic label for unlabelable text", () => {
 		expect(humanReadableJobId("!!! 一二三 !!!")).toBe("LegionDispatch");
+	});
+});
+
+describe("runtime fallback classification", () => {
+	function result(
+		overrides: Partial<{
+			exitCode: number;
+			error?: string;
+			aborted?: boolean;
+		}>,
+	) {
+		return {
+			attemptId: "a",
+			taskId: "t",
+			agent: "coder",
+			role: "coder",
+			model: "m",
+			index: 0,
+			output: "",
+			stderr: "",
+			exitCode: 0,
+			durationMs: 1,
+			tokens: 1,
+			requests: 1,
+			...overrides,
+		};
+	}
+
+	test("treats a clean exit as ok", () => {
+		expect(classifyFailure(result({ exitCode: 0 }))).toBe("ok");
+	});
+
+	test("classifies retryable provider failures (rate-limit, unavailable, timeout)", () => {
+		for (const error of [
+			"429 Too Many Requests",
+			"rate limit reached, slow down",
+			"model 'm' is unavailable",
+			"unavailable model",
+			"request timed out after 30s",
+		]) {
+			expect(classifyFailure(result({ exitCode: 1, error }))).toBe("retryable");
+		}
+	});
+
+	test("classifies ordinary task/validation errors as fatal", () => {
+		expect(
+			classifyFailure(result({ exitCode: 1, error: "subagent crashed" })),
+		).toBe("fatal");
+		expect(
+			classifyFailure(
+				result({ exitCode: 1, error: "invalid assignment schema" }),
+			),
+		).toBe("fatal");
+		expect(
+			classifyFailure(
+				result({ exitCode: 1, error: "quota exceeded for this project" }),
+			),
+		).toBe("fatal");
+	});
+	test("treats aborted attempts as fatal (cancellation, not retry)", () => {
+		expect(
+			classifyFailure(result({ exitCode: 1, error: "quota", aborted: true })),
+		).toBe("fatal");
+	});
+});
+
+describe("selectorKey and nextReplacement", () => {
+	test("selectorKey distinguishes model for diverse but model+temperature for self-consistency", () => {
+		expect(selectorKey({ model: "a", strategy: "diverse" })).toBe("a");
+		expect(
+			selectorKey({
+				model: "a",
+				temperature: 0.6,
+				strategy: "self-consistency",
+			}),
+		).toBe("a@0.6");
+	});
+
+	test("diverse advances to the next unattempted model and exhausts", () => {
+		const candidates = ["a", "b", "c"];
+		expect(
+			nextReplacement({
+				strategy: "diverse",
+				candidates,
+				attemptedSelectors: new Set(["a", "b"]),
+				selfConsistencyCount: 0,
+			}),
+		).toEqual({ model: "c", temperature: undefined, candidateIndex: 2 });
+		expect(
+			nextReplacement({
+				strategy: "diverse",
+				candidates,
+				attemptedSelectors: new Set(["a", "b", "c"]),
+				selfConsistencyCount: 0,
+			}),
+		).toBeUndefined();
+	});
+
+	test("self-consistency repeats the strongest model on the next ladder temperature and exhausts on cycle", () => {
+		const candidates = ["frontier"];
+		const ladder = [0.2, 0.6, 1.0];
+		expect(
+			nextReplacement({
+				strategy: "self-consistency",
+				candidates,
+				temperatureLadder: ladder,
+				attemptedSelectors: new Set(["frontier@0.2", "frontier@0.6"]),
+				selfConsistencyCount: 2,
+			}),
+		).toEqual({ model: "frontier", temperature: 1.0, candidateIndex: 0 });
+		expect(
+			nextReplacement({
+				strategy: "self-consistency",
+				candidates,
+				temperatureLadder: ladder,
+				attemptedSelectors: new Set([
+					"frontier@0.2",
+					"frontier@0.6",
+					"frontier@1.0",
+				]),
+				selfConsistencyCount: 3,
+			}),
+		).toBeUndefined();
 	});
 });

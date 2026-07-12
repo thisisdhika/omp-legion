@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DecomposerAuditEvent } from "./decomposition";
 
 import {
 	DEFAULT_DECOMPOSITION_AGENT,
@@ -107,6 +108,14 @@ export interface DispatchAttempt {
 	 * provider happened to default to.
 	 */
 	readonly temperature?: number;
+	/** Ordered candidate model selectors for this role (the role's `models` policy, filtered to those resolvable at plan time). Enables runtime fallback / adaptive expansion to advance to the next unattempted selector. */
+	readonly candidates?: readonly string[];
+	/** Position of `model` within `candidates`. Always 0 for self-consistency (one strongest model); the model index for diverse. */
+	readonly candidateIndex?: number;
+	/** This role's dispatch strategy, used to choose adaptive-expansion replacements (diverse → next model; self-consistency → next temperature). */
+	readonly strategy?: DispatchStrategy;
+	/** This role's configured temperature ladder (undefined for diverse unless explicitly set); used by self-consistency expansion. */
+	readonly temperatureLadder?: readonly number[];
 }
 
 export interface DispatchPlan {
@@ -128,6 +137,7 @@ export interface DispatchRecord {
 	readonly governance?: readonly GovernanceDecision[];
 	readonly resolutions?: readonly GovernanceResolution[];
 	readonly error?: string;
+	readonly decomposerAttempts?: readonly DecomposerAuditEvent[];
 }
 
 export interface ExpertResult {
@@ -144,7 +154,18 @@ export interface ExpertResult {
 	readonly tokens: number;
 	readonly requests: number;
 	readonly error?: string;
+	/** The temperature the attempt was run with (carried for audit/observability; absent when the executor doesn't report it). */
+	readonly temperature?: number;
 	readonly aborted?: boolean;
+	/**
+	 * Terminal retry failure, when the subagent exited because the auto-retry
+	 * loop gave up (retry-after exceeded the cap, or all attempts exhausted).
+	 * Lets classifyFailure treat this as authoritative instead of guessing via regex.
+	 */
+	readonly retryFailure?: {
+		readonly attempt: number;
+		readonly errorMessage: string;
+	};
 	/**
 	 * Set only when this attempt ran inside host isolation (branch mode) and
 	 * actually produced a commit — the not-yet-merged branch holding this
@@ -163,6 +184,10 @@ export interface ExpertResult {
 	 * (read-only roles, or a failed/aborted attempt).
 	 */
 	readonly verified?: boolean;
+	/** When this attempt was a runtime fallback or adaptive expansion replacement, the model selector it replaced. Absent for planned attempts. */
+	readonly replacedModel?: string;
+	/** Why this attempt was scheduled: a retryable-failure class (e.g. "quota/rate-limit") for fallback, or "adaptive expansion". Absent for planned attempts. */
+	readonly replacementReason?: string;
 }
 
 export interface DispatchAuditData {
@@ -170,6 +195,7 @@ export interface DispatchAuditData {
 	readonly syntheses: readonly SynthesisResult[];
 	readonly governance: readonly GovernanceDecision[];
 	readonly resolutions: readonly GovernanceResolution[];
+	readonly decomposerAttempts?: readonly DecomposerAuditEvent[];
 }
 
 export interface OrchestrationRepository {
@@ -181,6 +207,7 @@ export interface OrchestrationRepository {
 		governance: readonly GovernanceDecision[],
 		completedAt: number,
 		resolutions?: readonly GovernanceResolution[],
+		decomposerAttempts?: readonly DecomposerAuditEvent[],
 	): void;
 	fail(
 		id: string,
@@ -200,7 +227,12 @@ function availableModels(
 	policy: RoleModelPolicy | undefined,
 	defaultModel: string | undefined,
 	isAvailable: ModelAvailability,
-): { models: string[]; strategy: DispatchStrategy; ensembleSize: number } {
+): {
+	models: string[];
+	candidates: string[];
+	strategy: DispatchStrategy;
+	ensembleSize: number;
+} {
 	const candidates = policy?.models ?? (defaultModel ? [defaultModel] : []);
 	const models = candidates.filter(isAvailable);
 	if (models.length === 0) {
@@ -210,6 +242,7 @@ function availableModels(
 
 	return {
 		models,
+		candidates,
 		strategy: policy?.strategy ?? DEFAULT_DISPATCH_STRATEGY,
 		ensembleSize: policy?.ensembleSize ?? DEFAULT_ENSEMBLE_SIZE,
 	};
@@ -300,6 +333,154 @@ export function resolveAgentName(
 		? candidate
 		: DEFAULT_DECOMPOSITION_AGENT;
 }
+/**
+ * Classifies an expert attempt result for runtime model fallback. A
+ * "retryable" provider failure (quota, rate limit, unavailable model,
+ * timeout, overloaded backend) warrants consuming the next candidate
+ * selector; any other non-zero exit is a task/validation error that must be
+ * preserved, not retried. Aborted attempts are neither — cancellation is
+ * handled separately by the caller.
+ */
+export type FailureClass = "ok" | "retryable" | "fatal";
+
+// ponytail: fixed #5 — /quota/i removed; host treats quota as non-retryable (credential rotation)
+// ponytail: fixed #6 — transport errors added
+const RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
+	/\b429\b/i,
+	/\b50[234]\b/i,
+	/\b529\b/i,
+	/rate[\s_-]?limit(?:ed)?/i,
+	/too many requests/i,
+	/unavailable/i,
+	/not (?:available|found)/i,
+	/timed?\s?out/i,
+	/timeout/i,
+	/overload(?:ed)?/i,
+	/capacity/i,
+	// Transport-level transient errors
+	/fetch failed/i,
+	/ECONNRESET/i,
+	/ECONNREFUSED/i,
+	/ENOTFOUND/i,
+	/ETIMEDOUT/i,
+	/network/i,
+	/DNS/i,
+];
+
+export function classifyFailure(result: ExpertResult): FailureClass {
+	if (result.aborted) return "fatal";
+	if (result.exitCode === 0 && !result.error) return "ok";
+	// ponytail: fixed #11 — retryFailure from host is authoritative
+	if (result.retryFailure) return "retryable";
+	const message = result.error ?? "";
+	if (RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message)))
+		return "retryable";
+	return "fatal";
+}
+
+/** Stable identity for a (model, temperature) selector, used to avoid retrying a selector already attempted for a task. */
+export function selectorKey(attempt: {
+	readonly model: string;
+	readonly temperature?: number;
+	readonly strategy?: DispatchStrategy;
+}): string {
+	const strategy = attempt.strategy ?? DEFAULT_DISPATCH_STRATEGY;
+	if (strategy !== DEFAULT_DISPATCH_STRATEGY) return attempt.model;
+	return `${attempt.model}@${attempt.temperature ?? "default"}`;
+}
+
+export interface ReplacementSpec {
+	readonly model: string;
+	readonly temperature?: number;
+	readonly candidateIndex: number;
+}
+
+export interface NextReplacementParams {
+	readonly strategy: DispatchStrategy;
+	readonly candidates: readonly string[];
+	readonly temperatureLadder?: readonly number[];
+	readonly attemptedSelectors: ReadonlySet<string>;
+	readonly selfConsistencyCount: number;
+}
+
+// ponytail: fixed #12 — availability re-check documented
+/**
+ * Picks the next unattempted selector for runtime fallback or adaptive
+ * expansion. For "diverse", advances to the next model in `candidates` not yet
+ * attempted; for "self-consistency", repeats the strongest model with the next
+ * temperature-ladder value. Returns undefined when every selector has already
+ * been attempted (candidate exhaustion) — callers must then preserve the
+ * failure rather than loop.
+ *
+ * NOTE on availability: `candidates` is NOT re-filtered for isAvailable here.
+ * This is intentional — transient unavailability may resolve by the time the
+ * fallback runs, and the cost is merely one attempt that will fail fast if the
+ * provider is still unavailable. Callers that need a stronger guarantee should
+ * check `expansionHeadroom` before calling, or validate at the point of dispatch.
+ */
+export function nextReplacement(
+	params: NextReplacementParams,
+): ReplacementSpec | undefined {
+	const {
+		strategy,
+		candidates,
+		temperatureLadder,
+		attemptedSelectors,
+		selfConsistencyCount,
+	} = params;
+	// ponytail: fixed #12 — candidates NOT re-checked for isAvailable (see doc above)
+	if (strategy === DEFAULT_DISPATCH_STRATEGY) {
+		const ladder =
+			temperatureLadder && temperatureLadder.length > 0
+				? temperatureLadder
+				: DEFAULT_TEMPERATURE_LADDER;
+		const strongest = candidates[0];
+		if (strongest === undefined) return undefined;
+		const temperature = ladder[selfConsistencyCount % ladder.length];
+		if (attemptedSelectors.has(`${strongest}@${temperature}`)) return undefined;
+		return { model: strongest, candidateIndex: 0, temperature };
+	}
+	for (let index = 0; index < candidates.length; index++) {
+		const model = candidates[index];
+		if (model !== undefined && !attemptedSelectors.has(model)) {
+			const temperature =
+				temperatureLadder && temperatureLadder.length > 0
+					? temperatureLadder[index % temperatureLadder.length]
+					: undefined;
+			return { model, candidateIndex: index, temperature };
+		}
+	}
+	return undefined;
+}
+/**
+ * Checks whether adaptive expansion has headroom beyond an initial ensemble.
+ * For "self-consistency", returns true when the temperature ladder has more
+ * rungs than the initial ensemble consumes. For "diverse", returns true when
+ * there are more candidate models than ensembleSize.
+ *
+ * Callers should check this before calling `nextReplacement` to surface a
+ * warning when expansion is silently unavailable under default config
+ * (e.g. ensemble 3 + ladder [0.2, 0.6, 1.0] for self-consistency exhausts
+ * every selector in the initial plan).
+ *
+ * ponytail: fixed #13 — expansion headroom helper
+ */
+export function expansionHeadroom(
+	strategy: DispatchStrategy,
+	candidates: readonly string[],
+	temperatureLadder: readonly number[] | undefined,
+	ensembleSize: number,
+): boolean {
+	if (candidates.length === 0) return false;
+	if (strategy === DEFAULT_DISPATCH_STRATEGY) {
+		const ladder =
+			temperatureLadder && temperatureLadder.length > 0
+				? temperatureLadder
+				: DEFAULT_TEMPERATURE_LADDER;
+		return ladder.length > ensembleSize;
+	}
+	return candidates.length > ensembleSize;
+}
 
 export function buildDispatchPlan(
 	request: DispatchRequest,
@@ -347,6 +528,11 @@ export function buildDispatchPlan(
 				model,
 				temperature: temperatures[attemptOffset],
 				index: attemptIndex,
+				candidates: selection.candidates,
+				candidateIndex:
+					selection.strategy === DEFAULT_DISPATCH_STRATEGY ? 0 : attemptOffset,
+				strategy: selection.strategy,
+				temperatureLadder: policy?.temperatureLadder,
 			});
 			attemptIndex += 1;
 		}

@@ -35,6 +35,9 @@ export const LEGION_SETTING_KEYS = {
 	embeddingBaseUrl: "embed.baseUrl",
 	embeddingApiKey: "embed.apiKey",
 	embeddingModel: "embed.model",
+	decomposer: "decomposer",
+	decomposerModels: "decomposer.models",
+	decomposerTemperatureLadder: "decomposer.temperatureLadder",
 } as const;
 export const DEFAULT_MODEL_MAP = {} as const;
 

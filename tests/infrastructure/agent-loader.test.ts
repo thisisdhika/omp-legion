@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+	bundledAgentFilePaths,
 	isLegionAgentName,
 	loadAgentDefinitions,
 } from "../../src/infrastructure/agent-loader";
@@ -39,6 +40,15 @@ describe("loadAgentDefinitions", () => {
 		);
 		for (const name of agents.keys()) {
 			expect(isLegionAgentName(name)).toBe(true);
+		}
+	});
+});
+
+describe("bundledAgentFilePaths", () => {
+	test("enumerates every bundled persona .md the packaging smoke test must ship", () => {
+		const paths = bundledAgentFilePaths();
+		for (const p of paths) {
+			expect(p).toMatch(/agents\/legion-.*\.md$/);
 		}
 	});
 });

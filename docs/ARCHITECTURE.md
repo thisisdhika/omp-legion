@@ -57,7 +57,7 @@ src/
                        in-memory-orchestration-repository.ts  test/fallback double
                        orchestration-record.ts   clone/type-guard helpers for DispatchRecord
 
-src/agents/            legion-coder.md, legion-reviewer.md, legion-tester.md, legion-generalist.md
+agents/               legion-coder.md, legion-reviewer.md, legion-tester.md, legion-generalist.md
 rules/legion-dispatch.md   auto-discovered usage rule for the primary agent
 ```
 
@@ -318,7 +318,7 @@ model resolution are both 1:1 (one agent name → one model). Legion needs N:1
   host's own `discoverAgents(cwd, home)` finds (project `.omp/agents` > user
   `~/.omp/agent/agents` > plugin dirs > host-bundled) — this is what makes
   the `"task"` fallback resolvable — then (2) Legion's own bundled personas
-  (`src/agents/*.md`, parsed via the host's `parseAgent`) layered on top,
+  (`agents/*.md`, the OMP extension-package agents dir, parsed via the host's `parseAgent`) layered on top,
   and any `legion-*` project/user override files discovered by the same
   `discoverAgents` call replacing the bundled default of the same name.
 - **`isLegionAgentName(name)`** — any agent name starting with `legion-`.
@@ -417,7 +417,7 @@ event nor the reachable `ExtensionContext`/`AgentToolContext` exposes that
 anywhere. There is no host-native field to read.
 
 **Mechanism:** `agent-execution-context.ts` holds a module-scoped
-`AsyncLocalStorage<string>`. `HostExpertExecutor.run()` (`host-dispatcher.ts`)
+`AsyncLocalStorage<DispatchContext>`. `HostExpertExecutor.run()` (`host-dispatcher.ts`)
 wraps its `runSubprocess(...)` call in `runAsDispatchedAgent(execution.attempt.agent,
 () => runSubprocess({...}))`. This works because subagents re-bind their
 extensions against a new `ExtensionAPI` **within the same process** rather
@@ -426,14 +426,20 @@ extension against its own ExtensionAPI") — so the store set around one
 attempt's `runSubprocess` call stays correctly scoped to that attempt's own
 later `tool_call` events, without leaking into concurrent sibling attempts
 (`AsyncLocalStorage` isolates each call's context even when several attempts
-run concurrently via `Promise.all`). `registerIrcToolGuard(api)` then checks
-`shouldBlockIrc(currentDispatchAgentName())` — `isLegionAgentName` on
-whatever the store currently holds — and blocks only when true.
+run concurrently via `Promise.all`). The stored `DispatchContext` carries the
+sender kind (`expert` | `parent` | `host` | `system`), the parent route, and
+the single destination the sender may address. `registerIrcToolGuard(api)`
+calls `evaluateIrcCall(currentDispatchContext(), event.input)`: an isolated
+expert may only address its authenticated parent route (blocks direct
+expert-to-expert, spoofed/aliased peer names, and `to: "all"` parallel
+messaging); any other sender is the trusted control plane and is allowed.
 
-**Fails open, deliberately:** if the store is ever unset (a non-Legion
-subagent, or any code path outside a Legion dispatch), the call is never
-blocked. A detection gap here must not silently break IRC for unrelated
-subagents.
+**Fails closed:** an expert whose context has no authenticated
+`allowedDestination`, or that sends to an empty/unknown target, is blocked —
+a detection gap must never let an expert coordinate with siblings. A caller
+with no authenticated expert context (the control plane: parent, host,
+system) is allowed, preserving legitimate expert→parent reporting and
+host/system control.
 
 **Implementation status:** implemented and unit-tested (including a
 concurrent-attempts test asserting no cross-attempt leakage), but **not yet
@@ -734,99 +740,58 @@ grill log, and ADR 0002's consequences section).
 
 ## 8. Config surface
 
-**Full resolution chain, highest priority first** (verified directly against
-the host's `getPluginSettings`, `@oh-my-pi/pi-coding-agent/extensibility/plugins/loader.ts`):
+Legion resolves configuration through one explicit precedence chain, from
+lowest to highest:
 
-1. **Per-request overrides** (`dispatch-service.ts`'s `applyConfigDefaults`):
-   the caller's `modelMap`/`defaultEnsembleSize` in the actual
-   `legion_dispatch` call merge on top of everything below, per-role.
-2. **Project settings** — `<project>/.omp/plugin-overrides.json`'s
-   `settings["omp-legion"]` object. This is what `config.example.json`
-   documents and what most projects actually author by hand.
-3. **Global settings** — `~/.omp/plugins/omp-plugins.lock.json`'s
-   `settings["omp-legion"]` object. **Not** a hand-authored file the way
-   project overrides are — it's a lockfile, populated by whatever `omp
-   plugin` tooling manages global plugin config, not something this
-   project's docs walk through editing directly.
-4. **Legion's own bundled defaults** (`domain/constants.ts`):
-   `DEFAULT_MODEL_MAP = {}` (no role has a model until configured),
-   `DEFAULT_HOTL_THRESHOLDS`, `DEFAULT_ENSEMBLE_SIZE: 3`,
-   `DEFAULT_EMBEDDING_SETTINGS`, `DEFAULT_MAX_CONCURRENT_EXPERTS: 4` (§4.0).
+1. Built-in defaults from `domain/constants.ts`.
+2. Global `~/.omp/agent/config.yml` or `config.yaml`, under `config.legion`.
+3. Project `<project>/.omp/config.yml` or `config.yaml`, under `config.legion`.
+4. The project's/global plugin override settings delivered by OMP
+   (`.omp/plugin-overrides.json` and the host's global plugin settings).
+5. Per-request values supplied to `legion_dispatch`.
 
-Steps 2-3 are merged by the host, *before* Legion ever sees a settings
-object — `loadLegionConfig(cwd)` (`infrastructure/host-config.ts`) calls
-`getPluginSettings("omp-legion", cwd)`, whose actual implementation is:
+Each layer is deep-merged by field. A partial `hotl`, `embedding`, `modelMap`,
+or `decomposer` object therefore preserves unrelated values from lower layers.
+Invalid YAML, JSON, or Legion values produce a diagnostic and fall back safely
+without preventing the extension from loading. `loadLegionConfig()` reads the
+two normal OMP config locations with Bun's YAML parser, then merges the host
+plugin settings through `resolveLegionConfig()`.
 
-```ts
-const global = runtimeConfig.settings[pluginName] || {};
-const project = projectOverrides.settings?.[pluginName] || {};
-return { ...global, ...project };  // project wins
-```
+The decomposer is intentionally independent from expert role policies:
 
-This is JSON, not YAML, in both files — `config.yml` is the host's own
-fixed, non-extensible settings schema and cannot carry third-party plugin
-config. Each individual setting may arrive as a real object or a
-JSON-encoded string (host settings UIs sometimes only support flat string
-fields) — `parseJsonSetting` handles both.
+- `decomposer.models` is an ordered, non-empty selector list.
+- `decomposer.temperatureLadder` is optional.
+- `strategy` and `ensembleSize` are rejected for the decomposer.
+- Exactly one model runs at a time; retryable provider failures advance to the
+  next unattempted selector, while validation/task errors stop the sequence.
+- When no decomposer policy exists, the active session model remains the
+  compatibility fallback.
 
-**The merge above is shallow, not deep — a real gotcha depending on how you
-author settings.** `{...global, ...project}` replaces whole top-level keys
-of the settings object; it does not merge the *fields inside* a nested
-object like `hotl`. Legion's settings schema supports two authoring styles
-for exactly this reason (`LEGION_SETTING_KEYS`, `infrastructure/host-config.ts`):
-
-- **Flat dotted keys** (`"hotl.confidenceFloor"`, `"hotl.costCeiling"`, ...
-  as literal top-level property names — the same convention the host
-  settings UI itself uses, `package.json`'s `omp.settings`). Each one is
-  its own independent key in the merged settings object, so project
-  overriding `hotl.confidenceFloor` alone leaves global's
-  `hotl.costCeiling`/`hotl.disagreementThreshold`/`hotl.failureRateCeiling`
-  untouched — verified in `tests/infrastructure/host-config.test.ts`.
-- **A nested object** (`"hotl": {...}` as one JSON blob — what
-  `config.example.json` shows, since it's clearer to author a full config
-  file by hand this way). If project sets a *partial* `hotl` object while
-  global has a fuller one, project's object replaces global's **entirely**
-  — the fields project didn't specify do not fall back to global's values,
-  they fall through to Legion's own built-in defaults instead, since
-  neither Legion nor the flat keys have any visibility into what global's
-  now-discarded `hotl` object used to contain.
-- `parseLegionPluginSettings` prefers the flat key over the same field
-  inside a nested object when both are present
-  (`settings[flatKey] ?? nestedObject.field`), regardless of which layer
-  either came from.
-
-**Practical implication:** if you maintain both a global and a per-project
-config and expect *partial* per-project overrides to compose with the rest
-of your global settings, use the flat dotted-key form for anything you
-override per-project. The nested-object form is fine when a layer sets a
-*complete* object, or when you don't maintain a global config at all.
-
-**Config keys** (see `config.example.json` for a full worked example):
+**Config keys** (see `config.example.json` for a worked example):
 
 | Key | Shape | Meaning |
 |---|---|---|
-| `modelMap.<role>.models` | `string[]` | Models available to that role, e.g. `["anthropic/claude-fable-5"]`. |
-| `modelMap.<role>.strategy` | `"self-consistency" \| "diverse"` | `self-consistency` (default): every attempt samples the *first* listed model N times. `diverse`: attempts cycle round-robin through the full model list. |
-| `modelMap.<role>.ensembleSize` | `1`–`16` | Attempts for that role; falls back to `defaultEnsembleSize`. |
-| `modelMap.<role>.temperatureLadder` | `number[]` | Overrides `DEFAULT_TEMPERATURE_LADDER` for self-consistency sampling (§4.1a), cycled by attempt index. Ignored for "diverse" strategy unless explicitly set. |
-| `hotl.confidenceFloor` | `0`–`1` | Escalate if synthesis confidence (top cluster's dominance) falls below this. |
-| `hotl.disagreementThreshold` | `0`–`1` | Escalate if fragmentation (§7.0 — distinct-answer count, not `1 - confidence`) exceeds this. |
-| `hotl.costCeiling` | tokens | Escalate if a task's **mean** tokens per attempt exceeds this (§7.0 — not a sum). |
-| `hotl.failureRateCeiling` | `0`–`1` | Escalate if the fraction of attempts that failed/aborted outright exceeds this, independent of confidence (§7.0). |
-| `defaultEnsembleSize` | `1`–`16` | Ensemble size for any role without its own `ensembleSize`. |
-| `embedding.baseUrl`/`model`/`apiKey` | strings | Ollama fallback tier settings (registry/Mnemopi tiers use the host's own model resolution instead). |
-| `maxConcurrentExperts` | `≥1` | Caps total concurrent expert attempts per dispatch, all tasks combined (§4.0) — the host's own concurrency cap doesn't cover Legion's direct-executor calls. |
-| `verifyCommand` | string | Shell command re-run against each code-mutating attempt's isolated branch for execution-grounded consensus (§5.2), e.g. `"bun test"`. Off by default. |
-| `decisionTimeoutMs` | ms | How long a HOTL escalation waits for a human before auto-resolving to reject (§7.0). Default 30 minutes. |
+| `modelMap.<role>.models` | `string[]` | Ordered role model candidates. |
+| `modelMap.<role>.strategy` | `"self-consistency" \| "diverse"` | Expert selection strategy. |
+| `modelMap.<role>.ensembleSize` | `1`–`16` | Attempts for that role. |
+| `modelMap.<role>.temperatureLadder` | `number[]` | Optional role sampling ladder. |
+| `decomposer.models` | `string[]` | Sequential decomposer candidates. |
+| `decomposer.temperatureLadder` | `number[]` | Decomposer sampling ladder. |
+| `hotl.confidenceFloor` | `0`–`1` | Confidence escalation threshold. |
+| `hotl.disagreementThreshold` | `0`–`1` | Disagreement escalation threshold. |
+| `hotl.costCeiling` | tokens | Mean per-attempt cost ceiling. |
+| `hotl.failureRateCeiling` | `0`–`1` | Failed-attempt escalation threshold. |
+| `defaultEnsembleSize` | `1`–`16` | Default role ensemble size. |
+| `embedding.baseUrl`/`model`/`apiKey` | strings | Embedding provider settings. |
+| `maxConcurrentExperts` | `≥1` | Total in-flight expert cap. |
+| `verifyCommand` | string | Optional branch verification command. |
+| `decisionTimeoutMs` | ms | HOTL decision timeout. |
 
-`mergeLegionConfig` (`domain/config.ts`) is where every default actually
-applies. One real bug lived here: Zod's `.default()` only fires when a key
-is **absent**, not when it's present holding `undefined` — an object spread
-of a partial input (`{ ...raw.hotl, confidenceFloor: settings[...] ??
-raw.hotl.confidenceFloor }`) can produce exactly that. `withoutUndefined()`
-strips such keys before the final `legionConfigSchema.parse(...)` merge so a
-present-but-`undefined` field genuinely falls back to the default instead of
-silently overriding it with `undefined`.
+`mergeLegionConfig()` applies defaults and validates every field. The
+`resolveLegionConfig()` helper is pure and is used by tests to prove nested
+sibling preservation and source precedence; the host adapter uses the same
+function for runtime configuration.
+
 
 ## 9. Persistence (`infrastructure/host-orchestration-repository.ts`)
 
@@ -851,7 +816,7 @@ data: the orchestration record, HOTL packets, and confidence/disagreement/
 synthesis results — the actual audit trail a human-oversight product needs
 to produce, not process-lifecycle bookkeeping the host already solves.
 
-## 10. Agent personas (`src/agents/*.md`)
+## 10. Agent personas (`agents/*.md`)
 
 Four bundled personas, each a real Oh-My-Pi `AgentDefinition` (frontmatter +
 system prompt), loaded via `parseAgent` (§4.1):

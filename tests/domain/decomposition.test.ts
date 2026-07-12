@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
+import { mergeLegionConfig } from "../../src/domain/config";
 import {
 	fallbackDecomposition,
 	parseDecompositionResponse,
+	resolveDecomposerPolicy,
 } from "../../src/domain/decomposition";
 
 describe("task decomposition", () => {
@@ -42,5 +44,22 @@ describe("task decomposition", () => {
 				assignment: "Review the change",
 			},
 		]);
+	});
+});
+
+describe("resolveDecomposerPolicy", () => {
+	test("returns the configured decomposer policy", () => {
+		const config = mergeLegionConfig({
+			decomposer: { models: ["provider/a", "provider/b"] },
+		});
+		expect(resolveDecomposerPolicy(config)).toEqual({
+			models: ["provider/a", "provider/b"],
+			temperatureLadder: [0.2, 0.6, 1.0],
+		});
+	});
+
+	test("returns undefined when no decomposer policy is configured (legacy fallback)", () => {
+		const config = mergeLegionConfig({});
+		expect(resolveDecomposerPolicy(config)).toBeUndefined();
 	});
 });

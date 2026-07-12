@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
-import { mergeLegionConfig } from "../../src/domain/config";
+import {
+	mergeLegionConfig,
+	resolveLegionConfig,
+} from "../../src/domain/config";
 import {
 	DEFAULT_DISAGREEMENT_THRESHOLD,
 	DEFAULT_EMBEDDING_SETTINGS,
 	DEFAULT_ENSEMBLE_SIZE,
 	DEFAULT_HOTL_THRESHOLDS,
 	DEFAULT_MAX_CONCURRENT_EXPERTS,
+	DEFAULT_TEMPERATURE_LADDER,
 } from "../../src/domain/constants";
 
 describe("mergeLegionConfig", () => {
@@ -80,6 +84,118 @@ describe("mergeLegionConfig", () => {
 		expect(config).toMatchObject({
 			hotl: DEFAULT_HOTL_THRESHOLDS,
 			embedding: DEFAULT_EMBEDDING_SETTINGS,
+		});
+	});
+});
+
+describe("legion.decomposer config", () => {
+	test("accepts a decomposer policy with only an ordered models list", () => {
+		const config = mergeLegionConfig({
+			decomposer: { models: ["provider/a", "provider/b"] },
+		});
+		expect(config.decomposer).toEqual({
+			models: ["provider/a", "provider/b"],
+			temperatureLadder: [...DEFAULT_TEMPERATURE_LADDER],
+		});
+	});
+
+	test("rejects a decomposer policy carrying strategy", () => {
+		expect(() =>
+			mergeLegionConfig({
+				decomposer: { models: ["provider/a"], strategy: "diverse" },
+			}),
+		).toThrow(/strategy/i);
+	});
+
+	test("rejects a decomposer policy carrying ensembleSize", () => {
+		expect(() =>
+			mergeLegionConfig({
+				decomposer: { models: ["provider/a"], ensembleSize: 3 },
+			}),
+		).toThrow(/ensembleSize/i);
+	});
+
+	test("requires at least one model in the decomposer policy", () => {
+		expect(() => mergeLegionConfig({ decomposer: { models: [] } })).toThrow();
+	});
+});
+
+describe("resolveLegionConfig precedence", () => {
+	test("deep-merges nested fields so siblings are preserved across layers", () => {
+		const config = resolveLegionConfig({
+			global: { hotl: { confidenceFloor: 0.5 }, decomposer: { models: ["a"] } },
+			project: { hotl: { costCeiling: 100 }, decomposer: { models: ["b"] } },
+		});
+		// Both nested hotl siblings survive; project's decomposer models win.
+		expect(config.hotl).toMatchObject({
+			confidenceFloor: 0.5,
+			costCeiling: 100,
+		});
+		expect(config.decomposer?.models).toEqual(["b"]);
+	});
+
+	test("per-request overrides plugin override without clobbering siblings", () => {
+		const config = resolveLegionConfig({
+			pluginOverride: {
+				defaultEnsembleSize: 5,
+				hotl: { confidenceFloor: 0.8 },
+			},
+			request: {
+				defaultEnsembleSize: 9,
+				hotl: { costCeiling: 50 },
+			},
+		});
+		expect(config.defaultEnsembleSize).toBe(9);
+		expect(config.hotl).toMatchObject({
+			confidenceFloor: 0.8,
+			costCeiling: 50,
+		});
+	});
+
+	test("merges modelMap per role rather than replacing the whole map", () => {
+		const config = resolveLegionConfig({
+			global: { modelMap: { reviewer: { models: ["p/x"], ensembleSize: 2 } } },
+			project: { modelMap: { reviewer: { models: ["p/y"] } } },
+		});
+		expect(config.modelMap.reviewer).toMatchObject({
+			models: ["p/y"],
+			ensembleSize: 2,
+		});
+	});
+
+	test("global -> project -> pluginOverride -> request precedence order", () => {
+		const config = resolveLegionConfig({
+			global: { defaultEnsembleSize: 1 },
+			project: { defaultEnsembleSize: 2 },
+			pluginOverride: { defaultEnsembleSize: 3 },
+			request: { defaultEnsembleSize: 4 },
+		});
+		expect(config.defaultEnsembleSize).toBe(4);
+	});
+
+	test("invalid decomposer config produces a clear diagnostic", () => {
+		expect(() =>
+			resolveLegionConfig({
+				request: {
+					decomposer: { models: ["p/a"], strategy: "self-consistency" },
+				},
+			}),
+		).toThrow(/strategy/i);
+	});
+});
+
+describe("documented config.example.json", () => {
+	test("parses the example, including the decomposer policy", async () => {
+		const raw = await Bun.file(
+			new URL("../../config.example.json", import.meta.url),
+		).text();
+		const example = JSON.parse(raw) as {
+			settings: { "omp-legion": unknown };
+		};
+		const config = mergeLegionConfig(example.settings["omp-legion"]);
+		expect(config.decomposer).toMatchObject({
+			models: ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-luna"],
+			temperatureLadder: [0.2, 0.6, 1.0],
 		});
 	});
 });

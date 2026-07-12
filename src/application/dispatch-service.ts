@@ -2,7 +2,9 @@ import { Semaphore } from "../domain/concurrency";
 import type { LegionConfig } from "../domain/config";
 import {
 	DEFAULT_DECISION_TIMEOUT_MS,
+	DEFAULT_DISPATCH_STRATEGY,
 	DEFAULT_ENSEMBLE_SIZE,
+	DEFAULT_HOTL_THRESHOLDS,
 	DEFAULT_MAX_CONCURRENT_EXPERTS,
 	HOTL_DECISION_APPROVE,
 	HOTL_DECISION_EDIT,
@@ -13,6 +15,7 @@ import {
 	LEGION_DISPATCH_JOB_LABEL,
 } from "../domain/constants";
 import {
+	type DecomposerAuditEvent,
 	type TaskDecomposer,
 	fallbackDecomposition,
 } from "../domain/decomposition";
@@ -20,12 +23,17 @@ import {
 	type AgentResolver,
 	type DispatchAttempt,
 	type DispatchRequest,
+	type DispatchStrategy,
 	type ExpertResult,
 	type ModelAvailability,
 	type OrchestrationRepository,
+	type ReplacementSpec,
 	buildDispatchPlan,
+	classifyFailure,
 	dispatchRequestSchema,
 	humanReadableJobId,
+	nextReplacement,
+	selectorKey,
 } from "../domain/dispatch";
 import {
 	type GovernanceDecision,
@@ -262,6 +270,17 @@ interface TaskDispatchOutcome {
 	readonly synthesis: SynthesisResult;
 	readonly governance: GovernanceDecision;
 	readonly resolution?: GovernanceResolution;
+	/** Initial (pre-expansion) synthesis, preserved separately for auditability. */
+	readonly initialSynthesis: SynthesisResult;
+	/** Initial (pre-expansion) governance decision, preserved separately. */
+	readonly initialGovernance: GovernanceDecision;
+	/** Present when adaptive expansion ran; carries the expanded synthesis/governance. */
+	readonly expansion?: {
+		readonly synthesis: SynthesisResult;
+		readonly governance: GovernanceDecision;
+	};
+	/** Every runtime fallback performed for the task, for progress/audit observability. */
+	readonly replacements: readonly ReplacementRecord[];
 }
 
 /**
@@ -385,6 +404,35 @@ function summarizeResults(
 	});
 	return [header, ...tasks].join("\n\n---\n\n");
 }
+interface ReplacementRecord {
+	readonly from: string;
+	readonly to: string;
+	readonly reason: string;
+}
+
+/** Decorates a result with fallback/expansion metadata; returns it unchanged when nothing was added. */
+function recordReplacement(
+	result: ExpertResult,
+	replacedModel: string | undefined,
+	replacementReason: string | undefined,
+): ExpertResult {
+	if (replacedModel === undefined && replacementReason === undefined)
+		return result;
+	return { ...result, replacedModel, replacementReason };
+}
+
+/** Short human phrase for why a retryable failure triggered a fallback, derived from the error text. */
+function retryableReason(error?: string): string {
+	const message = error ?? "unknown provider error";
+	if (/\b429\b|quota|rate[\s_-]?limit/i.test(message))
+		return "quota/rate-limit";
+	if (/unavailable|not (?:available|found)/i.test(message))
+		return "model unavailable";
+	if (/timed?\s?out|timeout/i.test(message)) return "timeout";
+	if (/overload(?:ed)?|capacity|\b50[0-9]\b/i.test(message))
+		return "provider overload";
+	return "retryable provider error";
+}
 
 export class DispatchService {
 	readonly #options: DispatchServiceOptions;
@@ -431,12 +479,14 @@ export class DispatchService {
 	async #resolveRequest(
 		request: DispatchRequest,
 		context: JobRunContext,
+		decomposerAttempts: DecomposerAuditEvent[],
 	): Promise<DispatchRequest> {
 		if (request.tasks && request.tasks.length > 0) return request;
 		try {
 			const tasks = await this.#options.decomposer?.decompose({
 				task: request.task,
 				signal: context.signal,
+				onAudit: (event) => decomposerAttempts.push(event),
 			});
 			if (tasks && tasks.length > 0) return { ...request, tasks: [...tasks] };
 		} catch (error) {
@@ -444,6 +494,7 @@ export class DispatchService {
 				"Legion decomposition failed; using the full task as one assignment.",
 				{
 					error: error instanceof Error ? error.message : String(error),
+					decomposerAttempts,
 				},
 			);
 		}
@@ -520,6 +571,9 @@ export class DispatchService {
 						signal,
 					);
 					return { ...result, verified };
+				} catch {
+					// ponytail: fixed #3 — verifier error returns verified:false instead of throwing
+					return { ...result, verified: false };
 				} finally {
 					this.#concurrency.release();
 				}
@@ -532,7 +586,12 @@ export class DispatchService {
 		request: DispatchRequest,
 		parentToolCallId?: string,
 	): Promise<string> {
-		const resolvedRequest = await this.#resolveRequest(request, context);
+		const decomposerAttempts: DecomposerAuditEvent[] = [];
+		const resolvedRequest = await this.#resolveRequest(
+			request,
+			context,
+			decomposerAttempts,
+		);
 		const plan = this.#buildPlan(resolvedRequest, context.jobId);
 		const now = this.#options.now ?? Date.now;
 		this.#options.repository.create({
@@ -541,6 +600,7 @@ export class DispatchService {
 			state: "running",
 			createdAt: now(),
 			attempts: plan.attempts,
+			decomposerAttempts,
 		});
 		await context.reportProgress(
 			`Legion dispatch ${context.jobId} is running.`,
@@ -568,100 +628,29 @@ export class DispatchService {
 			const jobContext = await this.#options.executor.prepareJob?.();
 
 			const outcomes = await Promise.all(
-				[...attemptsByTask.entries()].map(async ([taskId, attempts]) => {
-					const results = await Promise.all(
-						attempts.map(async (attempt) => {
-							const execution: ExpertExecution = {
-								attempt,
-								task: plan.task,
-								parentToolCallId,
-								signal: context.signal,
-								jobContext,
-							};
-							await this.#concurrency.acquire();
-							try {
-								return await this.#options.executor.run(execution);
-							} catch (error) {
-								return failedResult(execution, error);
-							} finally {
-								this.#concurrency.release();
-							}
-						}),
-					);
-					const verifiedResults = await this.#verifyResults(
-						results,
-						context.signal,
-					);
-					let synthesis: SynthesisResult;
-					try {
-						synthesis = await this.#options.synthesizer.synthesize({
-							task: plan.task,
-							taskId,
-							experts: verifiedResults,
-							signal: context.signal,
-						});
-					} catch (error) {
-						synthesis = fallbackSynthesis(taskId, error);
-					}
-					const governance = evaluateGovernance({
-						metrics: {
-							confidence: synthesis.confidence,
-							disagreement: synthesis.disagreement,
-							cost: expertCost(verifiedResults),
-							failureRate: attemptFailureRate(verifiedResults),
-						},
-						thresholds: this.#options.governanceThresholds,
-					});
-					let finalSynthesis = synthesis;
-					let resolution: GovernanceResolution | undefined;
-					if (governance.shouldEscalate) {
-						const notice: EscalationNotice = {
-							jobId: context.jobId,
-							taskId,
-							decision: governance,
-							synthesis,
-						};
-						if (this.#options.notifyEscalation)
-							notifyWithoutBlocking(this.#options.notifyEscalation, notice);
-						resolution = await this.#resolveEscalation(notice, context.signal);
-						if (resolution.action === HOTL_DECISION_EDIT) {
-							finalSynthesis = await this.#options.synthesizer.synthesize({
-								task: plan.task,
-								taskId,
-								experts: verifiedResults,
-								humanNote: resolution.note,
-								signal: context.signal,
-							});
-						}
-					}
-					// The host's AsyncJobManager delivers one final text per job, once,
-					// on completion — there is no per-unit "deliver this now" channel
-					// (see docs/plan/algorithm-audit-and-hardening-v2.md Phase 3). So a
-					// task that finishes early cannot be delivered independently of a
-					// sibling task still awaiting a human decision — but its answer can
-					// still be surfaced right now, via progress, rather than making a
-					// human wait on the slowest task before seeing anything at all.
-					await context.reportProgress(`Legion synthesized task ${taskId}.`, {
+				[...attemptsByTask.entries()].map(async ([taskId, attempts]) =>
+					this.#dispatchTask({
 						taskId,
-						confidence: finalSynthesis.confidence,
-						disagreement: finalSynthesis.disagreement,
-						clusteringMethod: finalSynthesis.clusteringMethod,
-						escalated: governance.shouldEscalate,
-						humanDecision: resolution?.action,
-						answer: finalSynthesis.answer,
-					});
-					return {
-						taskId,
-						results: verifiedResults,
-						synthesis: finalSynthesis,
-						governance,
-						resolution,
-					};
-				}),
+						planned: attempts,
+						task: plan.task,
+						signal: context.signal,
+						jobContext,
+						context,
+						parentToolCallId,
+					}),
+				),
 			);
 			const results = outcomes.flatMap((outcome) => outcome.results);
-			const syntheses = outcomes.map((outcome) => outcome.synthesis);
-			const governance = outcomes.map((outcome) => outcome.governance);
+			const syntheses = outcomes.flatMap((outcome) =>
+				outcome.expansion
+					? [outcome.initialSynthesis, outcome.expansion.synthesis]
+					: [outcome.initialSynthesis],
+			);
+			const governance = outcomes.flatMap((outcome) =>
+				outcome.expansion
+					? [outcome.initialGovernance, outcome.expansion.governance]
+					: [outcome.initialGovernance],
+			);
 			const resolutions = outcomes.flatMap((outcome) =>
 				outcome.resolution ? [outcome.resolution] : [],
 			);
@@ -687,6 +676,7 @@ export class DispatchService {
 						syntheses,
 						governance,
 						resolutions,
+						decomposerAttempts,
 					},
 				);
 				await context.reportProgress(
@@ -725,6 +715,7 @@ export class DispatchService {
 				governance,
 				completedAt,
 				resolutions,
+				decomposerAttempts,
 			);
 			await context.reportProgress(
 				`Legion dispatch ${context.jobId} completed.`,
@@ -740,9 +731,402 @@ export class DispatchService {
 		} catch (error) {
 			if (!auditFailurePersisted) {
 				const message = error instanceof Error ? error.message : String(error);
-				this.#options.repository.fail(context.jobId, message, now());
+				this.#options.repository.fail(context.jobId, message, now(), {
+					results: [],
+					syntheses: [],
+					governance: [],
+					resolutions: [],
+					decomposerAttempts,
+				});
 			}
 			throw error;
+		}
+	}
+	async #dispatchTask(params: {
+		readonly taskId: string;
+		readonly planned: readonly DispatchAttempt[];
+		readonly task: string;
+		readonly signal: AbortSignal;
+		readonly jobContext: unknown;
+		readonly context: JobRunContext;
+		readonly parentToolCallId?: string;
+	}): Promise<TaskDispatchOutcome> {
+		const {
+			taskId,
+			planned,
+			task,
+			signal,
+			jobContext,
+			context,
+			parentToolCallId,
+		} = params;
+		const runAttempt = async (
+			attempt: DispatchAttempt,
+		): Promise<ExpertResult> => {
+			const execution: ExpertExecution = {
+				attempt,
+				task,
+				parentToolCallId,
+				signal,
+				jobContext,
+			};
+			await this.#concurrency.acquire();
+			try {
+				return await this.#options.executor.run(execution);
+			} catch (error) {
+				return failedResult(execution, error);
+			} finally {
+				this.#concurrency.release();
+			}
+		};
+
+		const template = planned[0];
+		const strategy = template?.strategy ?? DEFAULT_DISPATCH_STRATEGY;
+		const candidates = template?.candidates ?? [];
+		const temperatureLadder = template?.temperatureLadder;
+		const attemptedSelectors = new Set<string>();
+		for (const attempt of planned) attemptedSelectors.add(selectorKey(attempt));
+		const nextIndex = { value: planned.length };
+
+		// 1. Run the planned attempts concurrently (existing behavior: bounded by #concurrency).
+		const initialResults = await Promise.all(planned.map(runAttempt));
+		const results: ExpertResult[] = [...initialResults];
+		// 2. Runtime model fallback: retry retryable failures on the next unattempted selector.
+		const replacements = await this.#runFallback({
+			taskId,
+			template,
+			strategy,
+			candidates,
+			temperatureLadder,
+			initialResults,
+			signal,
+			context,
+			runAttempt,
+			attemptedSelectors,
+			results,
+			nextIndex,
+		});
+
+		// 3. Execution-grounded verification of every surviving branch.
+		const verifiedResults = await this.#verifyResults(results, signal);
+
+		// 4. Initial synthesis + governance.
+		const initialSynthesis = await this.#synthesize(
+			taskId,
+			verifiedResults,
+			task,
+			signal,
+		);
+		const initialGovernance = evaluateGovernance({
+			metrics: {
+				confidence: initialSynthesis.confidence,
+				disagreement: initialSynthesis.disagreement,
+				cost: expertCost(verifiedResults),
+				failureRate: attemptFailureRate(verifiedResults),
+			},
+			thresholds: this.#options.governanceThresholds,
+		});
+
+		// 5. One-step adaptive expansion (bounded, budget-gated) before HOTL.
+		const expanded = await this.#runExpansion({
+			taskId,
+			template,
+			strategy,
+			candidates,
+			temperatureLadder,
+			signal,
+			context,
+			runAttempt,
+			attemptedSelectors,
+			results,
+			nextIndex,
+			verifiedResults,
+			task,
+			initialSynthesis,
+			initialGovernance,
+		});
+
+		let finalSynthesis = expanded.synthesis;
+		let resolution: GovernanceResolution | undefined;
+		if (expanded.governance.shouldEscalate) {
+			const notice: EscalationNotice = {
+				jobId: context.jobId,
+				taskId,
+				decision: expanded.governance,
+				synthesis: expanded.synthesis,
+			};
+			if (this.#options.notifyEscalation)
+				notifyWithoutBlocking(this.#options.notifyEscalation, notice);
+			resolution = await this.#resolveEscalation(notice, signal);
+			if (resolution.action === HOTL_DECISION_EDIT) {
+				finalSynthesis = await this.#synthesize(
+					taskId,
+					verifiedResults,
+					// ponytail: fixed #1 — use verifiedResults for HOTL re-synthesis
+					task,
+					signal,
+					resolution.note,
+				);
+			}
+		}
+
+		await context.reportProgress(`Legion synthesized task ${taskId}.`, {
+			taskId,
+			confidence: finalSynthesis.confidence,
+			disagreement: finalSynthesis.disagreement,
+			clusteringMethod: finalSynthesis.clusteringMethod,
+			escalated: expanded.governance.shouldEscalate,
+			humanDecision: resolution?.action,
+			answer: finalSynthesis.answer,
+			replacements,
+			expanded: expanded.expansion !== undefined,
+			expandedConfidence: expanded.expansion?.synthesis.confidence,
+			expandedDisagreement: expanded.expansion?.synthesis.disagreement,
+		});
+
+		// ponytail: fixed #1 — return merged verified results in TaskDispatchOutcome
+		const mergedVerified = expanded.verifiedResult
+			? [...verifiedResults, expanded.verifiedResult]
+			: verifiedResults;
+		return {
+			taskId,
+			results: mergedVerified,
+			synthesis: finalSynthesis,
+			governance: expanded.governance,
+			resolution,
+			initialSynthesis,
+			initialGovernance,
+			expansion: expanded.expansion,
+			replacements,
+		};
+	}
+
+	async #runFallback(params: {
+		readonly taskId: string;
+		readonly template: DispatchAttempt | undefined;
+		readonly strategy: DispatchStrategy;
+		readonly candidates: readonly string[];
+		readonly temperatureLadder: readonly number[] | undefined;
+		readonly initialResults: readonly ExpertResult[];
+		readonly signal: AbortSignal;
+		readonly context: JobRunContext;
+		readonly runAttempt: (attempt: DispatchAttempt) => Promise<ExpertResult>;
+		readonly attemptedSelectors: Set<string>;
+		readonly results: ExpertResult[];
+		readonly nextIndex: { value: number };
+	}): Promise<ReplacementRecord[]> {
+		const replacements: ReplacementRecord[] = [];
+		const costCeiling = (
+			this.#options.governanceThresholds ?? DEFAULT_HOTL_THRESHOLDS
+		).costCeiling;
+		let fallbackAttempts = 0;
+		for (const seed of params.initialResults) {
+			if (classifyFailure(seed) !== "retryable") continue;
+			if (params.signal.aborted) break;
+			let current = seed;
+			while (true) {
+				if (params.signal.aborted || expertCost(params.results) >= costCeiling)
+					break;
+				if (++fallbackAttempts > params.candidates.length) break;
+				// ponytail: fixed #4 — attempt-count gate bounds fallback loop
+				const spec = nextReplacement({
+					strategy: params.strategy,
+					candidates: params.candidates,
+					temperatureLadder: params.temperatureLadder,
+					attemptedSelectors: params.attemptedSelectors,
+					selfConsistencyCount: params.results.length,
+				});
+				if (!spec) break;
+				const attempt = this.#replacementAttempt(
+					params.context.jobId,
+					params.template,
+					spec,
+					params.nextIndex.value,
+					params.taskId,
+				);
+				params.nextIndex.value += 1;
+				params.attemptedSelectors.add(selectorKey(attempt));
+				const result = await params.runAttempt(attempt);
+				const reason = retryableReason(current.error);
+				params.results.push(recordReplacement(result, current.model, reason));
+				replacements.push({ from: current.model, to: spec.model, reason });
+				await params.context.reportProgress(
+					`Legion retried task ${params.taskId} on ${spec.model} after a retryable provider failure.`,
+					{
+						taskId: params.taskId,
+						replacedModel: current.model,
+						model: spec.model,
+						reason: "fallback",
+						replacementReason: reason,
+					},
+				);
+				if (classifyFailure(result) !== "retryable") break;
+				current = result;
+			}
+		}
+		return replacements;
+	}
+
+	async #runExpansion(params: {
+		readonly taskId: string;
+		readonly template: DispatchAttempt | undefined;
+		readonly strategy: DispatchStrategy;
+		readonly candidates: readonly string[];
+		readonly temperatureLadder: readonly number[] | undefined;
+		readonly signal: AbortSignal;
+		readonly context: JobRunContext;
+		readonly runAttempt: (attempt: DispatchAttempt) => Promise<ExpertResult>;
+		readonly attemptedSelectors: Set<string>;
+		readonly results: ExpertResult[];
+		readonly nextIndex: { value: number };
+		readonly verifiedResults: readonly ExpertResult[];
+		readonly task: string;
+		readonly initialSynthesis: SynthesisResult;
+		readonly initialGovernance: GovernanceDecision;
+	}): Promise<{
+		synthesis: SynthesisResult;
+		governance: GovernanceDecision;
+		expansion?: { synthesis: SynthesisResult; governance: GovernanceDecision };
+		verifiedResult?: ExpertResult;
+	}> {
+		const expandable =
+			params.initialGovernance.shouldEscalate &&
+			params.initialGovernance.reasons.some(
+				(reason) => reason === "confidence" || reason === "disagreement",
+			);
+		const costCeiling = (
+			this.#options.governanceThresholds ?? DEFAULT_HOTL_THRESHOLDS
+		).costCeiling;
+		if (
+			!expandable ||
+			params.signal.aborted ||
+			expertCost(params.verifiedResults) >= costCeiling
+		) {
+			return {
+				synthesis: params.initialSynthesis,
+				governance: params.initialGovernance,
+			};
+		}
+		const spec = nextReplacement({
+			strategy: params.strategy,
+			candidates: params.candidates,
+			temperatureLadder: params.temperatureLadder,
+			attemptedSelectors: params.attemptedSelectors,
+			selfConsistencyCount: params.verifiedResults.length,
+		});
+		if (!spec)
+			return {
+				synthesis: params.initialSynthesis,
+				governance: params.initialGovernance,
+			};
+		const attempt = this.#replacementAttempt(
+			params.context.jobId,
+			params.template,
+			spec,
+			params.nextIndex.value,
+			params.taskId,
+		);
+		params.nextIndex.value += 1;
+		params.attemptedSelectors.add(selectorKey(attempt));
+		const expandedResult = await params.runAttempt(attempt);
+		const expandedVerified = expandedResult.branchName
+			? await this.#verifyOne(expandedResult, params.signal)
+			: expandedResult;
+		params.results.push(
+			recordReplacement(expandedVerified, undefined, "adaptive expansion"),
+		);
+		const mergedVerified = [...params.verifiedResults, expandedVerified];
+		// ponytail: fixed #1 — use merged verified results for expansion synthesis
+		const synthesis = await this.#synthesize(
+			params.taskId,
+			mergedVerified,
+			params.task,
+			params.signal,
+		);
+		const governance = evaluateGovernance({
+			metrics: {
+				confidence: synthesis.confidence,
+				disagreement: synthesis.disagreement,
+				cost: expertCost(mergedVerified),
+				failureRate: attemptFailureRate(mergedVerified),
+			},
+			thresholds: this.#options.governanceThresholds,
+		});
+		await params.context.reportProgress(
+			`Legion expanded task ${params.taskId} with one ${spec.model} attempt to resolve the escalation.`,
+			{
+				taskId: params.taskId,
+				model: spec.model,
+				reason: "expansion",
+				expandedConfidence: synthesis.confidence,
+				expandedDisagreement: synthesis.disagreement,
+			},
+		);
+		return {
+			synthesis,
+			governance,
+			expansion: { synthesis, governance },
+			verifiedResult: expandedVerified,
+		};
+	}
+
+	#replacementAttempt(
+		jobId: string,
+		template: DispatchAttempt | undefined,
+		spec: ReplacementSpec,
+		index: number,
+		taskId: string,
+	): DispatchAttempt {
+		const agent = template?.agent ?? "";
+		const role = template?.role ?? "";
+		const assignment = template?.assignment ?? "";
+		const description = template?.description;
+		const candidates = template?.candidates ?? [];
+		const strategy = template?.strategy ?? DEFAULT_DISPATCH_STRATEGY;
+		const temperatureLadder = template?.temperatureLadder;
+		return {
+			id: `${jobId}-${taskId}-r${index}`,
+			taskId,
+			agent,
+			role,
+			assignment,
+			description,
+			model: spec.model,
+			temperature: spec.temperature,
+			index,
+			candidates,
+			candidateIndex: spec.candidateIndex,
+			strategy,
+			temperatureLadder,
+		};
+	}
+
+	async #verifyOne(
+		result: ExpertResult,
+		signal: AbortSignal,
+	): Promise<ExpertResult> {
+		const verified = await this.#verifyResults([result], signal);
+		// ponytail: fixed #14 — delegate to #verifyResults to deduplicate verify logic
+		return verified[0] ?? result;
+	}
+
+	async #synthesize(
+		taskId: string,
+		experts: readonly ExpertResult[],
+		task: string,
+		signal: AbortSignal,
+		humanNote?: string,
+	): Promise<SynthesisResult> {
+		try {
+			return await this.#options.synthesizer.synthesize({
+				task,
+				taskId,
+				experts,
+				humanNote,
+				signal,
+			});
+		} catch (error) {
+			return fallbackSynthesis(taskId, error);
 		}
 	}
 }

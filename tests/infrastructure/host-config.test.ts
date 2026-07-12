@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { parseLegionPluginSettings } from "../../src/infrastructure/host-config";
+import {
+	loadLegionConfig,
+	parseLegionPluginSettings,
+} from "../../src/infrastructure/host-config";
 
 describe("parseLegionPluginSettings", () => {
 	test("loads nested project settings and JSON modelMap values", () => {
@@ -118,5 +124,67 @@ describe("parseLegionPluginSettings", () => {
 			// hotl.confidenceFloor).
 			expect(config.hotl.costCeiling).toBe(100_000);
 		});
+	});
+});
+
+describe("decomposer policy parsing", () => {
+	test("parses a nested decomposer object", () => {
+		const config = parseLegionPluginSettings({
+			decomposer: JSON.stringify({
+				models: ["anthropic/claude-fable-5"],
+				temperatureLadder: [0.3],
+			}),
+		});
+		expect(config.decomposer).toMatchObject({
+			models: ["anthropic/claude-fable-5"],
+			temperatureLadder: [0.3],
+		});
+	});
+
+	test("parses flat dotted decomposer keys", () => {
+		const config = parseLegionPluginSettings({
+			"decomposer.models": JSON.stringify(["openai/gpt", "anthropic/claude"]),
+		});
+		expect(config.decomposer?.models).toEqual([
+			"openai/gpt",
+			"anthropic/claude",
+		]);
+	});
+
+	test("decomposer is absent when no explicit models are set (legacy fallback)", () => {
+		const config = parseLegionPluginSettings({});
+		expect(config.decomposer).toBeUndefined();
+	});
+});
+
+describe("loadLegionConfig source precedence", () => {
+	test("deep-merges global and project config.legion YAML layers", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "legion-project-"));
+		const home = mkdtempSync(join(tmpdir(), "legion-home-"));
+		try {
+			mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+			mkdirSync(join(cwd, ".omp"), { recursive: true });
+			writeFileSync(
+				join(home, ".omp", "agent", "config.yml"),
+				"config:\n  legion:\n    hotl:\n      confidenceFloor: 0.4\n      costCeiling: 100\n    modelMap:\n      reviewer:\n        models: [global-model]\n        ensembleSize: 2\n",
+			);
+			writeFileSync(
+				join(cwd, ".omp", "config.yml"),
+				"config:\n  legion:\n    hotl:\n      confidenceFloor: 0.9\n    modelMap:\n      reviewer:\n        strategy: diverse\n",
+			);
+
+			const config = await loadLegionConfig(cwd, join(home, ".omp", "agent"));
+
+			expect(config.hotl.confidenceFloor).toBe(0.9);
+			expect(config.hotl.costCeiling).toBe(100);
+			expect(config.modelMap.reviewer).toMatchObject({
+				models: ["global-model"],
+				strategy: "diverse",
+				ensembleSize: 2,
+			});
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

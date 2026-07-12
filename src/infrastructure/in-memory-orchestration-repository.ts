@@ -24,6 +24,7 @@ export class InMemoryOrchestrationRepository
 		governance: DispatchRecord["governance"],
 		completedAt: number,
 		resolutions?: DispatchRecord["resolutions"],
+		decomposerAttempts?: DispatchRecord["decomposerAttempts"],
 	): void {
 		const record = this.#records.get(id);
 		if (!record) throw new Error(`Orchestration ${id} was not found.`);
@@ -37,6 +38,7 @@ export class InMemoryOrchestrationRepository
 				syntheses,
 				governance,
 				resolutions,
+				decomposerAttempts,
 			}),
 		);
 	}

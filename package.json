@@ -4,7 +4,7 @@
 	"description": "MoA-over-MoE orchestration with HOTL governance for Oh My Pi",
 	"type": "module",
 	"main": "src/index.ts",
-	"files": ["src/", "src/agents/"],
+	"files": ["src/", "agents/", "rules/"],
 	"omp": {
 		"name": "legion",
 		"version": "0.1.0",
@@ -30,6 +30,18 @@
 			"decisionTimeoutMs": {
 				"type": "number",
 				"description": "How long a HOTL escalation waits for a human before auto-resolving to reject. Default 30 minutes."
+			},
+			"decomposer": {
+				"type": "string",
+				"description": "JSON object with ordered models and optional temperature ladder for sequential decomposition."
+			},
+			"decomposer.models": {
+				"type": "string",
+				"description": "JSON array of decomposer model selectors, tried sequentially."
+			},
+			"decomposer.temperatureLadder": {
+				"type": "string",
+				"description": "JSON array of temperatures used by sequential decomposer attempts."
 			},
 			"hotl.confidenceFloor": {
 				"type": "number",

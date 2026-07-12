@@ -31,6 +31,7 @@ export interface HostExecutorOptions {
 	readonly artifactsDir?: string;
 	readonly parentArtifactManager?: ExecutorOptions["parentArtifactManager"];
 	readonly parentActiveModelPattern?: string;
+	readonly parentAgentId?: string;
 	/**
 	 * Legion's own resolved agent roster (bundled personas + any project/user
 	 * override), loaded once at session_start via agent-loader.ts. Agent
@@ -164,9 +165,10 @@ export class HostExpertExecutor implements ExpertExecutor {
 		// runIsolatedSubprocess) with its agent name so irc-tool-guard.ts can
 		// identify legion-* callers later, from inside that same subagent's own
 		// tool_call events — see agent-execution-context.ts for why this is
-		// necessary at all.
-		const result = await runAsDispatchedAgent(execution.attempt.agent, () =>
-			runIsolatedSubprocess(isolatedOptions),
+		const result = await runAsDispatchedAgent(
+			execution.attempt.agent,
+			() => runIsolatedSubprocess(isolatedOptions),
+			this.#options.parentAgentId,
 		);
 
 		return {
@@ -186,6 +188,8 @@ export class HostExpertExecutor implements ExpertExecutor {
 			aborted: result.aborted,
 			branchName: result.branchName,
 			baseSha: result.branchBaseSha,
+			// ponytail: fixed #11 — preserve host's retryFailure signal
+			retryFailure: result.retryFailure,
 		};
 	}
 }

@@ -1,6 +1,6 @@
 {
-	"//": "Example .omp/plugin-overrides.json for omp-legion. This is the host's real plugin-settings mechanism (getPluginSettings, JSON only — not config.yml, which is the host's own fixed settings schema and can't be extended by third-party plugins). Copy the \"omp-legion\" object below into your project's .omp/plugin-overrides.json under \"settings\". Every field is optional — anything you omit falls back to the defaults in src/domain/constants.ts.",
-	"//priority": "Resolution order (highest wins): this project file > ~/.omp/plugins/omp-plugins.lock.json's global settings for this plugin > Legion's built-in defaults. The host merges project-over-global with a SHALLOW merge per top-level key — if you also maintain global settings and want a partial project override to compose with the rest (not replace it wholesale), use flat dotted keys like \"hotl.confidenceFloor\" instead of nesting under \"hotl\". See docs/ARCHITECTURE.md §8 for the full explanation.",
+	"//": "Example project plugin override for omp-legion. Global/project OMP config.yml files may also provide config.legion; this file is the plugin-override layer. Every field is optional.",
+	"//priority": "Effective precedence (highest wins): per-request values > project plugin overrides > global plugin overrides > project config.legion > global config.legion > Legion defaults. Nested objects deep-merge by field; invalid values emit a diagnostic and fall back safely. See docs/ARCHITECTURE.md §8.",
 
 	"settings": {
 		"omp-legion": {
@@ -31,6 +31,11 @@
 			"embedding": {
 				"baseUrl": "http://127.0.0.1:11434",
 				"model": "nomic-embed-text"
+			},
+			"decomposer": {
+				"//": "Independent sequential policy for the task decomposer. Runs ONE model at a time, advancing to the next selector on a retryable provider failure (quota/rate-limit/timeout). `strategy` and `ensembleSize` are NOT allowed here — omit them. Set this to use an explicit decomposer model list; when omitted, the decomposer falls back to the active session model.",
+				"models": ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-luna"],
+				"temperatureLadder": [0.2, 0.6, 1.0]
 			}
 		}
 	}

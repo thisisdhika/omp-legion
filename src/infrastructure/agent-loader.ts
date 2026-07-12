@@ -21,14 +21,30 @@ export function isLegionAgentName(name: string): boolean {
 }
 
 const BUNDLED_AGENTS_DIR = dirname(fileURLToPath(import.meta.url));
-const BUNDLED_AGENTS_SRC_DIR = join(BUNDLED_AGENTS_DIR, "..", "agents");
-
+const BUNDLED_AGENTS_SRC_DIR = join(BUNDLED_AGENTS_DIR, "..", "..", "agents");
 /**
- * Parses Legion's own bundled agent personas (src/agents/*.md) via the host's
- * real parseAgent() — these are read directly from the extension's own source
- * tree and never copied out to a project/user directory. discoverAgents()
- * alone does not see them; it only merges project/user/plugin agent dirs
- * plus the HOST's own bundled set, not a third-party extension's bundle.
+ * Absolute paths of Legion's bundled persona files (agents/*.md, the OMP
+ * extension-package agents dir — see task/discovery.ts). Exposed so the
+ * packaging smoke test enumerates "all bundled prompts" from the loader's own
+ * source-of-truth directory instead of re-globbing.
+ */
+export function bundledAgentFilePaths(): string[] {
+	try {
+		return readdirSync(BUNDLED_AGENTS_SRC_DIR)
+			.filter((f) => f.endsWith(".md"))
+			.map((f) => join(BUNDLED_AGENTS_SRC_DIR, f));
+	} catch {
+		return [];
+	}
+}
+/**
+ * Parses Legion's own bundled agent personas (agents/*.md — the OMP
+ * extension-package agents dir) via the host's real parseAgent(). They are
+ * read directly from the extension's own tree and never copied out to a
+ * project/user directory. Because they live at `<ext>/agents/`, the host's
+ * discoverAgents() also surfaces them whenever the package is registered as
+ * an OMP extension root (see the packaging smoke test), but reading them here
+ * keeps bundled-load deterministic regardless of how the package is wired in.
  */
 function loadBundledLegionAgents(): Map<string, AgentDefinition> {
 	const map = new Map<string, AgentDefinition>();
@@ -58,9 +74,8 @@ function loadBundledLegionAgents(): Map<string, AgentDefinition> {
 	}
 	return map;
 }
-
 /**
- * Loads Legion's full agent roster: bundled defaults (src/agents/*.md),
+ * Loads Legion's full agent roster: bundled defaults (agents/*.md),
  * overridden or extended by any `legion-*.md` files the host's own
  * discoverAgents() finds in the project (`<cwd>/.omp/agents/`) or user
  * (`~/.omp/agent/agents/`) directories — project overrides user, both

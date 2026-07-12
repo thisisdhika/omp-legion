@@ -879,6 +879,485 @@ describe("DispatchService", () => {
 		// Nothing is ever merged once a task is rejected — every isolated
 		// attempt's branch (winner included) is discarded instead.
 		expect(branchMerger.merged).toHaveLength(0);
-		expect(branchMerger.discarded.flat()).toHaveLength(2);
+		expect(branchMerger.discarded.flat()).toHaveLength(4);
+	});
+
+	describe("DispatchService runtime model fallback and adaptive expansion", () => {
+		class ScriptedExecutor implements ExpertExecutor {
+			readonly executions: ExpertExecution[] = [];
+			constructor(
+				private readonly behave: (execution: ExpertExecution) => ExpertResult,
+			) {}
+			async run(execution: ExpertExecution): Promise<ExpertResult> {
+				this.executions.push(execution);
+				return this.behave(execution);
+			}
+		}
+
+		function retryableResult(
+			execution: ExpertExecution,
+			error: string,
+		): ExpertResult {
+			return {
+				attemptId: execution.attempt.id,
+				taskId: execution.attempt.taskId,
+				agent: execution.attempt.agent,
+				role: execution.attempt.role,
+				model: execution.attempt.model,
+				index: execution.attempt.index,
+				temperature: execution.attempt.temperature,
+				output: "",
+				stderr: error,
+				exitCode: 1,
+				durationMs: 1,
+				tokens: 0,
+				requests: 0,
+				error,
+			};
+		}
+
+		function okResult(execution: ExpertExecution, tokens = 2): ExpertResult {
+			return {
+				attemptId: execution.attempt.id,
+				taskId: execution.attempt.taskId,
+				agent: execution.attempt.agent,
+				role: execution.attempt.role,
+				model: execution.attempt.model,
+				index: execution.attempt.index,
+				temperature: execution.attempt.temperature,
+				output: `output-${execution.attempt.index}`,
+				stderr: "",
+				exitCode: 0,
+				durationMs: 1,
+				tokens,
+				requests: 1,
+			};
+		}
+
+		function capturingContext(): JobRunContext & {
+			progresses: Array<Record<string, unknown>>;
+		} {
+			const progresses: Array<Record<string, unknown>> = [];
+			return {
+				jobId: "job-1",
+				signal: new AbortController().signal,
+				reportProgress: async (
+					text: string,
+					details?: Record<string, unknown>,
+				) => {
+					progresses.push({ text, ...(details ?? {}) });
+				},
+				progresses,
+			};
+		}
+
+		function singleTask(
+			modelMap?: Record<string, unknown>,
+			extra?: Record<string, unknown>,
+		) {
+			return {
+				task: "Do the thing",
+				tasks: [
+					{ id: "task", agent: "coder", role: "coder", assignment: "Do it" },
+				],
+				modelMap: modelMap ?? {},
+				...extra,
+			};
+		}
+
+		test("falls back to the next candidate model on a quota/rate-limit failure (diverse)", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.model === "a"
+					? retryableResult(execution, "429 Too Many Requests: quota exhausted")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "a",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["a", "b", "c"],
+						strategy: "diverse",
+						ensembleSize: 2,
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			// The replacement (model "c") runs; the failed attempt is preserved.
+			expect(executor.executions.map((e) => e.attempt.model)).toEqual([
+				"a",
+				"b",
+				"c",
+			]);
+			const failed = repository.record?.results?.find((r) => r.model === "a");
+			expect(failed?.error).toContain("429");
+			const replacement = repository.record?.results?.find(
+				(r) => r.model === "c",
+			);
+			expect(replacement?.replacementReason).toBe("quota/rate-limit");
+			expect(replacement?.replacedModel).toBe("a");
+			expect(ctx.progresses.some((p) => p.reason === "fallback")).toBe(true);
+		});
+
+		test("does not retry an ordinary (non-retryable) task/validation error", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.model === "a"
+					? retryableResult(execution, "subagent crashed")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "a",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["a", "b", "c"],
+						strategy: "diverse",
+						ensembleSize: 2,
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			expect(executor.executions.map((e) => e.attempt.model)).toEqual([
+				"a",
+				"b",
+			]);
+			const failed = repository.record?.results?.find((r) => r.model === "a");
+			expect(failed?.replacementReason).toBeUndefined();
+			expect(ctx.progresses.some((p) => p.reason === "fallback")).toBe(false);
+		});
+
+		test("falls back on an unavailable-model failure (diverse)", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.model === "a"
+					? retryableResult(execution, "model 'a' is unavailable")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "a",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["a", "b", "c"],
+						strategy: "diverse",
+						ensembleSize: 2,
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			expect(executor.executions.map((e) => e.attempt.model)).toEqual([
+				"a",
+				"b",
+				"c",
+			]);
+			expect(
+				repository.record?.results?.find((r) => r.model === "c")
+					?.replacementReason,
+			).toBe("model unavailable");
+		});
+
+		test("exhausts candidates without duplicating a selector (diverse)", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.model === "c"
+					? okResult(execution)
+					: retryableResult(execution, "rate limit exceeded"),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "a",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+				governanceThresholds: {
+					confidenceFloor: 0,
+					disagreementThreshold: 1,
+					costCeiling: 1_000_000,
+					failureRateCeiling: 1,
+				},
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["a", "b", "c"],
+						strategy: "diverse",
+						ensembleSize: 2,
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			// "a" and "b" both fail; only "a" gets the single replacement "c".
+			// "b" is preserved as failed with no replacement (candidates exhausted).
+			expect(executor.executions.map((e) => e.attempt.model)).toEqual([
+				"a",
+				"b",
+				"c",
+			]);
+			expect(
+				repository.record?.results?.find((r) => r.model === "b")
+					?.replacementReason,
+			).toBeUndefined();
+		});
+
+		test("stops scheduling fallbacks once the job is cancelled", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const controller = new AbortController();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.model === "a"
+					? retryableResult(execution, "quota exhausted")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "a",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["a", "b", "c"],
+						strategy: "diverse",
+						ensembleSize: 2,
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			controller.abort();
+			await job({
+				jobId: "job-1",
+				signal: controller.signal,
+				reportProgress: async () => {},
+			});
+
+			expect(executor.executions.map((e) => e.attempt.model)).toEqual([
+				"a",
+				"b",
+			]);
+		});
+
+		test("retries self-consistency on the next temperature-ladder value", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.temperature === 0.2
+					? retryableResult(execution, "model unavailable")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "frontier",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["frontier"],
+						strategy: "self-consistency",
+						ensembleSize: 2,
+						temperatureLadder: [0.2, 0.6, 1.0],
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			expect(executor.executions.map((e) => e.attempt.temperature)).toEqual([
+				0.2, 0.6, 1.0,
+			]);
+			expect(
+				repository.record?.results?.find((r) => r.temperature === 1.0)
+					?.replacedModel,
+			).toBe("frontier");
+		});
+
+		test("self-consistency fallback is bounded by the temperature ladder (candidate exhaustion)", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.temperature === 0.2
+					? retryableResult(execution, "model unavailable")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "frontier",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["frontier"],
+						strategy: "self-consistency",
+						ensembleSize: 3,
+						temperatureLadder: [0.2, 0.6, 1.0],
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			// All three ladder values already attempted; no unique replacement exists.
+			expect(executor.executions).toHaveLength(3);
+		});
+
+		class ExpandingSynthesizer implements SynthesisRunner {
+			async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+				const confidence = Math.min(1, 0.7 + 0.1 * input.experts.length);
+				return {
+					taskId: input.taskId,
+					answer: "a",
+					confidence,
+					disagreement: 0.1,
+					clusteringMethod: "embedding",
+					embeddingQuality: "real",
+					clusters: [
+						{
+							representativeAttemptId: input.experts[0]?.attemptId ?? "none",
+							attemptIds: input.experts.map((e) => e.attemptId),
+							size: input.experts.length,
+						},
+					],
+					synthesisUsed: true,
+				};
+			}
+		}
+
+		test("adds one adaptive-expansion attempt that can resolve a confidence escalation", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			let notifications = 0;
+			const executor = new ScriptedExecutor((execution) => okResult(execution));
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new ExpandingSynthesizer(),
+				repository,
+				defaultModel: "frontier",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+				governanceThresholds: {
+					confidenceFloor: 0.95,
+					disagreementThreshold: 1,
+					costCeiling: 1_000_000,
+					failureRateCeiling: 0.5,
+				},
+				notifyEscalation: () => {
+					notifications += 1;
+				},
+			});
+			service.dispatch(singleTask(undefined, { defaultEnsembleSize: 2 }));
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await job(ctx);
+
+			// 2 planned + 1 expansion; expansion lifted confidence above the floor.
+			expect(executor.executions).toHaveLength(3);
+			expect(notifications).toBe(0);
+			expect(repository.record?.state).toBe("completed");
+			expect(repository.record?.syntheses).toHaveLength(2);
+			expect(ctx.progresses.some((p) => p.reason === "expansion")).toBe(true);
+		});
+
+		test("skips adaptive expansion when the cost budget is already exceeded", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			let notifications = 0;
+			const executor = new ScriptedExecutor((execution) =>
+				okResult(execution, 500),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new ExpandingSynthesizer(),
+				repository,
+				defaultModel: "frontier",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+				governanceThresholds: {
+					confidenceFloor: 0.95,
+					disagreementThreshold: 1,
+					costCeiling: 5,
+					failureRateCeiling: 0.5,
+				},
+				notifyEscalation: () => {
+					notifications += 1;
+				},
+				decisionGate: async () => ({ action: "reject" }),
+			});
+			service.dispatch(singleTask(undefined, { defaultEnsembleSize: 2 }));
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			const ctx = capturingContext();
+			await expect(job(ctx)).rejects.toThrow();
+
+			// Budget gate prevents the expansion; escalation still goes to HOTL.
+			expect(executor.executions).toHaveLength(2);
+			expect(notifications).toBe(1);
+			expect(ctx.progresses.some((p) => p.reason === "expansion")).toBe(false);
+		});
 	});
 });

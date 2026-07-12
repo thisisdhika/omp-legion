@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { DecomposerPolicy, LegionConfig } from "./config";
 import {
 	DEFAULT_DECOMPOSITION_AGENT,
 	DEFAULT_DECOMPOSITION_ROLE,
@@ -30,6 +31,7 @@ const decompositionPayloadSchema = z.union([
 export interface DecompositionInput {
 	readonly task: string;
 	readonly signal?: AbortSignal;
+	readonly onAudit?: (event: DecomposerAuditEvent) => void;
 }
 
 export interface TaskDecomposer {
@@ -87,4 +89,52 @@ export function fallbackDecomposition(task: string): readonly DispatchTask[] {
 			assignment: task,
 		},
 	];
+}
+
+/**
+ * Outcome recorded for each decomposer attempt so the dispatch audit can show
+ * exactly which model was tried, in what order, and why it failed.
+ * - `success`: model returned a valid decomposition.
+ * - `retryable-failure`: the provider/completion call failed (network, quota,
+ *   rate-limit, timeout, empty output, abort) — the decomposer advances to the
+ *   next unattempted selector.
+ * - `fatal-failure`: the provider/completion call failed with a non-retryable
+ *   error (auth failure, context length exceeded) — the decomposer stops.
+ * - `validation-failure`: the model answered but the response failed schema
+ *   parsing/duplicate-id checks — a task-level error, NOT retried.
+ * - `unavailable`: the selector could not be resolved to a model at runtime.
+ * - `cancelled`: the attempt was skipped because the abort signal fired.
+ */
+export type DecomposerAttemptStatus =
+	| "success"
+	| "retryable-failure"
+	| "fatal-failure"
+	| "validation-failure"
+	| "unavailable"
+	| "cancelled";
+
+export interface DecomposerAuditEvent {
+	readonly selector: string;
+	readonly index: number;
+	readonly status: DecomposerAttemptStatus;
+	/** Temperature sampled for this attempt from the policy's ladder (cycled by index). */
+	readonly temperature?: number;
+	readonly error?: string;
+	readonly timestamp: number;
+}
+
+/**
+ * Resolve the decomposer policy from resolved Legion config.
+ *
+ * Returns the explicit `legion.decomposer` policy when one is configured with
+ * at least one model. When no policy is configured, returns `undefined` so the
+ * caller falls back to the active session model (legacy behavior) rather than
+ * running an empty ordered list.
+ */
+export function resolveDecomposerPolicy(
+	config: LegionConfig,
+): DecomposerPolicy | undefined {
+	return config.decomposer && config.decomposer.models.length > 0
+		? config.decomposer
+		: undefined;
 }

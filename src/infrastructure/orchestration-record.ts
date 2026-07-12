@@ -21,6 +21,9 @@ export function cloneDispatchRecord(record: DispatchRecord): DispatchRecord {
 		resolutions: record.resolutions?.map((resolution) => ({
 			...resolution,
 		})),
+		decomposerAttempts: record.decomposerAttempts?.map((attempt) => ({
+			...attempt,
+		})),
 	};
 }
 
