@@ -34,20 +34,27 @@ session — including the human-decision step in governance.
 
 ```
 src/
-├── presentation/     dispatch-tool.ts     the legion_dispatch ToolDefinition
-│                     dispatch-card.ts     custom TUI render (tree)
+├── presentation/     dispatch-tool.ts     the legion_dispatch ToolDefinition + live widget
+│                     dispatch-card.ts     custom TUI render (framedBlock sections)
+│                     spinner.ts           spinner frames + elapsed/progress text helpers
 ├── application/       dispatch-service.ts  the one orchestration flow
 ├── domain/            dispatch.ts          plan/attempt/agent-resolution types + pure logic
 │                      decomposition.ts     LLM decomposition contract + fallback
 │                      synthesis.ts         clustering + synthesis contracts
 │                      governance.ts        HOTL threshold evaluation
+│                      concurrency.ts       Semaphore bounding total in-flight expert attempts
 │                      config.ts            LegionConfig schema + merge
 │                      constants.ts         every literal, threshold, and prompt-adjacent string
 └── infrastructure/    host-dispatcher.ts        runSubprocess + AsyncJobManager adapters
                        host-dispatch-service.ts  wires one DispatchService per session
                        host-config.ts            plugin-settings → LegionConfig
-                       agent-loader.ts           bundled + discovered legion-* agents
+                       agent-loader.ts           bundled + discovered legion-* agents (loadAgentDefinitions)
+                       agent-execution-context.ts  globalThis-anchored AsyncLocalStorage tagging each expert's call chain
                        task-tool-guard.ts        blocks native task → legion-* agents
+                       irc-tool-guard.ts         blocks legion-* experts from IRC coordination outside their parent route
+                       git-commit-guard.ts       blocks legion-* experts from `git commit`
+                       branch-merger.ts          winner-only isolation branch merge-back
+                       verifier.ts               execution-grounded verifyCommand runner
                        embedding-provider.ts     registry → Mnemopi → Ollama fallback chain
                        llm-aggregator.ts         Aggregator over completeHostLlm
                        llm-decomposer.ts         TaskDecomposer over completeHostLlm
@@ -57,7 +64,11 @@ src/
                        in-memory-orchestration-repository.ts  test/fallback double
                        orchestration-record.ts   clone/type-guard helpers for DispatchRecord
 
-agents/               legion-coder.md, legion-reviewer.md, legion-tester.md, legion-generalist.md
+agents/               legion-coder.md, legion-reviewer.md (read-only), legion-tester.md,
+                      legion-generalist.md, legion-scout.md (powers /skill:centurion),
+                      legion-decomposer.md (internal planning-only — never itself dispatchable,
+                      excluded from both legion_dispatch's role resolution and the native task tool)
+skills/centurion/SKILL.md  ensemble-driven clarifying-question loop, invoked via /skill:centurion
 rules/legion-dispatch.md   auto-discovered usage rule for the primary agent
 ```
 
@@ -78,11 +89,12 @@ Concrete walkthrough of one `legion_dispatch` call with two explicit tasks.
 On the host's `session_start` event, `legionExtension`:
 
 1. Loads `LegionConfig` (`loadLegionConfig(ctx.cwd)`) and the full agent
-   roster (`loadDispatchAgents(ctx.cwd)`) **in parallel**.
+   roster (`loadAgentDefinitions(ctx.cwd)`) **in parallel**.
 2. Builds one `DispatchService` via `createHostDispatchService(ctx, config,
    agents, api.events)` and stashes it in a closure variable.
-3. Registers `registerTaskToolGuard(api)` and the tool itself
-   (`api.registerTool(createDispatchTool(() => service))`) — these two calls
+3. Registers `registerTaskToolGuard(api)`, `registerIrcToolGuard(api)`,
+   `registerGitCommitGuard(api)`, and the tool itself
+   (`api.registerTool(createDispatchTool(() => service))`) — these four calls
    happen once, outside `session_start`, since guard registration and tool
    registration don't depend on session state.
 
@@ -146,7 +158,10 @@ scheduled background job's own callback.
    `TaskDecomposer.decompose()`; on success, use its tasks; on decomposer
    failure (model unavailable, invalid JSON, etc.), report progress and fall
    back to `fallbackDecomposition(request.task)` — one task, role
-   `"generalist"`, agent forced to `DEFAULT_DECOMPOSITION_AGENT` (`"task"`).
+   `DEFAULT_DECOMPOSITION_ROLE` (`"generalist"`). The `agent` field on the
+   fallback task (`DEFAULT_DECOMPOSITION_AGENT`, also `"generalist"`) is
+   never actually trusted — `resolveAgentName` always re-resolves the real
+   agent from `role`, so this is only a placeholder value on the type.
 2. `#buildPlan(resolvedRequest, context.jobId)` — the *real* plan, attempt ids
    now prefixed with the actual job id (e.g. `LegionReviewAndImplement-t1-0`).
 3. `repository.create(...)` persists the initial `"running"` record, then
@@ -299,8 +314,11 @@ constructor and wrapped around every `executor.run()` call.
 
 **Implementation status:** unit-tested (winner-only merge, full-discard on
 rejection, and concurrency-cap enforcement are all directly asserted in
-`tests/application/dispatch-service.test.ts`), but **not yet live-verified**
-against a real host session with actual concurrent mutating attempts.
+`tests/application/dispatch-service.test.ts`) and **live-verified**: a real
+`legion-coder` expert's edit + `git commit` attempt (blocked by §4.4) ran
+inside its own per-attempt isolated worktree with concurrent sibling
+attempts, and the edit itself was confirmed discarded — the real project
+directory's working tree stayed completely untouched.
 
 ### 4.1 Agent resolution — one persona, many models (`domain/dispatch.ts`, `infrastructure/agent-loader.ts`)
 
@@ -310,34 +328,42 @@ model resolution are both 1:1 (one agent name → one model). Legion needs N:1
 
 - **`resolveAgentName(role, availableAgentNames)`** (pure, domain layer): for
   role `"coder"`, checks whether `"legion-coder"` is in the resolvable set;
-  if so, dispatches use that persona; if not, falls back to
-  `DEFAULT_DECOMPOSITION_AGENT` (`"task"`, the host's own generic agent) —
-  never an unresolvable, made-up name.
-- **`loadDispatchAgents(cwd, home)`** (infrastructure): builds the resolvable
-  set the executor needs. It merges, in this order: (1) every agent the
-  host's own `discoverAgents(cwd, home)` finds (project `.omp/agents` > user
-  `~/.omp/agent/agents` > plugin dirs > host-bundled) — this is what makes
-  the `"task"` fallback resolvable — then (2) Legion's own bundled personas
-  (`agents/*.md`, the OMP extension-package agents dir, parsed via the host's `parseAgent`) layered on top,
-  and any `legion-*` project/user override files discovered by the same
-  `discoverAgents` call replacing the bundled default of the same name.
-- **`isLegionAgentName(name)`** — any agent name starting with `legion-`.
-  Non-`legion-*` agents discovered in the same directories (a user's own
-  native OMP agents) are ignored by `loadAgentDefinitions` (the
-  Legion-scoped-only variant) but *are* included by `loadDispatchAgents`
-  (the full unfiltered variant actually used for dispatch), specifically so
-  the `"task"` fallback and any user-authored role name still resolve.
+  if so, dispatches use that persona. **Fails closed** on a miss — returns
+  `undefined` rather than substituting any fallback agent. `buildDispatchPlan`
+  turns an `undefined` resolution into a thrown, actionable error naming the
+  exact role and task id (`Legion has no "legion-<role>" persona for role
+  "<role>" (task "<id>"); dispatch this task with the native \`task\` tool
+  instead.`) — rejecting the whole dispatch rather than silently routing to
+  something the caller didn't ask for. There is no non-Legion fallback agent
+  of any kind; every resolvable name starts with `legion-`.
+- **`loadAgentDefinitions(cwd)`** (`infrastructure/agent-loader.ts`, the only
+  loader — there is no separate "full unfiltered" variant) builds the
+  resolvable set: Legion's own bundled personas (`agents/*.md`, parsed via
+  the host's `parseAgent`), overridden or extended by any `legion-*.md` files
+  the host's own `discoverAgents()` finds in the project (`<cwd>/.omp/agents/`)
+  or user (`~/.omp/agent/agents/`) directories — project overrides user, both
+  override the bundled default of the same name. Non-`legion-*` agents found
+  in those same directories (a user's own native OMP agents) are deliberately
+  ignored; they stay reachable only via the host's native `task` tool, never
+  Legion's dispatch. `LEGION_DECOMPOSER_AGENT_NAME` (`legion-decomposer`) is
+  excluded from the resolvable set `host-dispatch-service.ts` builds for
+  dispatch, and from the roster surfaced to the decomposer itself — it is a
+  planning-only persona, never an ensemble attempt.
 
 **Never trusted:** `dispatchTaskSchema.agent` is optional and read by
 nothing — the actual dispatched agent is always `resolveAgent(task.role)`,
 never a caller- or LLM-supplied `agent` string. This closed a real bug: the
 LLM decomposer used to be asked to invent an `agent` field and would produce
 unresolvable names, causing "Cannot cluster expert results without output."
-`decomposition.ts`'s LLM contract now excludes `agent` entirely and
-force-normalizes every parsed task's `agent` to `DEFAULT_DECOMPOSITION_AGENT`
-regardless of what the LLM output. (That same error string can still occur
-today if every expert for a task genuinely crashes — see §4.1a — but it no
-longer takes the whole dispatch down when it does.)
+`decomposition.ts`'s LLM contract now excludes `agent` entirely; the
+decomposer instead sees the real loaded roster (role + description for every
+resolvable persona, `formatAvailableRoles` in `aggregator-prompts.ts`) and is
+instructed to pick an exact match or fall back to `"generalist"` — inventing
+a role outside that list now rejects the dispatch (via `resolveAgentName`
+above) rather than silently substituting something. (That same "Cannot
+cluster expert results without output" error string can still occur today if
+every expert for a task genuinely crashes — see §4.1a — but it no longer
+takes the whole dispatch down when it does.)
 
 ### 4.1a Model-selection warnings and the temperature ladder (`domain/dispatch.ts`, Phase 4/6)
 
@@ -416,23 +442,34 @@ which agent is currently executing — and neither the host's `tool_call`
 event nor the reachable `ExtensionContext`/`AgentToolContext` exposes that
 anywhere. There is no host-native field to read.
 
-**Mechanism:** `agent-execution-context.ts` holds a module-scoped
-`AsyncLocalStorage<DispatchContext>`. `HostExpertExecutor.run()` (`host-dispatcher.ts`)
-wraps its `runSubprocess(...)` call in `runAsDispatchedAgent(execution.attempt.agent,
-() => runSubprocess({...}))`. This works because subagents re-bind their
-extensions against a new `ExtensionAPI` **within the same process** rather
-than a separate one (`task/executor.ts`: "the subagent then re-binds each
-extension against its own ExtensionAPI") — so the store set around one
-attempt's `runSubprocess` call stays correctly scoped to that attempt's own
-later `tool_call` events, without leaking into concurrent sibling attempts
-(`AsyncLocalStorage` isolates each call's context even when several attempts
-run concurrently via `Promise.all`). The stored `DispatchContext` carries the
-sender kind (`expert` | `parent` | `host` | `system`), the parent route, and
-the single destination the sender may address. `registerIrcToolGuard(api)`
-calls `evaluateIrcCall(currentDispatchContext(), event.input)`: an isolated
-expert may only address its authenticated parent route (blocks direct
+**Mechanism:** `agent-execution-context.ts` holds a single
+`AsyncLocalStorage<DispatchContext>`, anchored on `globalThis` via a
+`Symbol.for` key rather than a plain module-scoped `const`. `HostExpertExecutor.run()`
+(`host-dispatcher.ts`) wraps its `runSubprocess(...)` call in
+`runAsDispatchedAgent(execution.attempt.agent, () => runSubprocess({...}))`.
+The stored `DispatchContext` carries the sender kind (`expert` | `parent` |
+`host` | `system`), the parent route, and the single destination the sender
+may address. `registerIrcToolGuard(api)` calls
+`evaluateIrcCall(currentDispatchContext(), event.input)`: an isolated expert
+may only address its authenticated parent route (blocks direct
 expert-to-expert, spoofed/aliased peer names, and `to: "all"` parallel
 messaging); any other sender is the trusted control plane and is allowed.
+
+**Why `globalThis`, not a plain module-scoped variable — a real bug this
+fixed:** subagents re-bind their extensions against a new `ExtensionAPI`
+inside the same OS process (`task/executor.ts`: "the subagent then re-binds
+each extension against its own ExtensionAPI"), which re-imports this
+extension's source and can hand it a second, freshly-evaluated module
+instance. A plain `const store = new AsyncLocalStorage(...)` at module scope
+is then a *different object* on each side: the parent's `store.run()` and the
+subagent's own `store.getStore()` never agree, and the subagent's guard
+silently sees `undefined` context for a real expert. This was live-confirmed
+as a genuine bypass in `git-commit-guard` (§4.4) — a `legion-coder` expert's
+`git commit` went straight through with no block — before the fix. Anchoring
+the `AsyncLocalStorage` instance on `globalThis` makes every module instance
+share the one real store regardless of how many times the module is
+re-evaluated in-process, while its per-async-context isolation guarantee
+(concurrent attempts never see each other's context) is unaffected.
 
 **Fails closed:** an expert whose context has no authenticated
 `allowedDestination`, or that sends to an empty/unknown target, is blocked —
@@ -442,11 +479,44 @@ system) is allowed, preserving legitimate expert→parent reporting and
 host/system control.
 
 **Implementation status:** implemented and unit-tested (including a
-concurrent-attempts test asserting no cross-attempt leakage), but **not yet
-live-verified** against a real host session — the mechanism relies on the
-host's internal turn loop staying within one continuous async chain from
-the `runSubprocess` call, which unit tests with hand-written async
-gaps can approximate but not prove against the actual host runtime.
+concurrent-attempts test asserting no cross-attempt leakage, and a
+module-duplication regression test — `tests/infrastructure/agent-execution-context.test.ts`
+— that reproduces the exact re-bound-extension scenario above via a
+genuinely separate file copy). **Live-verified**: a live smoke test session
+first caught the module-scoped-store bug via `git-commit-guard` (§4.4)
+failing to block a real expert's commit; after the `globalThis` fix, the
+same live scenario was re-run and the commit was correctly blocked.
+
+### 4.4 `git commit` guard (`infrastructure/git-commit-guard.ts`)
+
+**Why this exists:** motivated by a real incident — a dispatched expert ran
+`git commit` mid-ensemble during manual testing and it landed on `main` with
+no synthesis, no governance, and no human in the loop. A dispatched expert's
+job is to produce one candidate answer for synthesis/HOTL governance to
+evaluate, never to land changes on its own; committing is a primary-agent
+action, made only when a human has prompted for one.
+
+**Mechanism:** scoped to the `bash` tool's `command` field — the only path a
+`legion-*` expert has to run `git commit` (personas that don't grant `bash`,
+like `legion-reviewer`, can't reach this at all). `isGitCommitCommand()`
+pattern-matches `git commit` (and commit-creating plumbing like
+`commit-tree`) as an actual subcommand, tolerating leading flags
+(`git -C dir commit`) and command chaining (`&&`, `;`, `|`) — deliberately
+loose, not a shell parser, since a false positive on a command that merely
+mentions "commit" costs far less than a missed commit escaping ensemble
+review. `evaluateBashCall(context, command)` blocks only when
+`context?.senderKind === "expert"` (via `currentDispatchContext()`, §4.3);
+every other sender — including an *undefined* context — passes through
+unblocked, unlike `irc-tool-guard`'s fail-closed posture. This is
+deliberate: `bash` is a normal tool the primary agent (which never runs
+inside a dispatch wrapper) uses constantly for legitimate commits, so an
+undefined context here is the *expected* normal case, not a detection gap to
+close defensively.
+
+**Live-verified:** a `legion-coder` expert instructed to edit a file and run
+`git add -A && git commit` was blocked with the guard's message across all 3
+ensemble attempts; the file edit itself was also cleanly discarded (isolated
+per-attempt worktree, §4.0), leaving the real working tree untouched.
 
 ## 5. Synthesis — the MoA layer (`domain/synthesis.ts`)
 
@@ -570,11 +640,42 @@ every branched attempt gets independently re-verified before synthesis) but
 
 - `label: "Legion"` — not `"Legion Dispatch"`. Since this extension only ever
   ships one tool, the extra word was redundant noise in every render.
-- **No `renderCall`.** `renderCall` + `renderResult` on the same tool render
-  as two separately-headed blocks stacked on top of each other, not one
-  merged card — a platform quirk. Everything renderCall would have shown
-  (the request args) is available inside `renderResult`'s optional 4th
-  `args` parameter instead, so the whole card is built in one place.
+- **`renderCall` is a deliberate no-op** (`EMPTY_COMPONENT`, `render: () =>
+  []`), not omitted. Without *any* `renderCall`, the host falls back to a
+  plain `theme.bold(label)` line above every render (`tool-execution.ts`) —
+  a redundant "Legion" heading floating above the card's own header, since
+  the card already draws one via `renderStatusLine` (§6.2). Every native
+  tool (`task` included) avoids this the same way: define `renderCall` at
+  all, even a no-op one, so the fallback never fires. (An earlier version of
+  this doc said "no `renderCall`" for a similar-sounding but different
+  reason — double-headed stacking from defining *both* hooks — which was
+  never actually the mechanism here; this is the corrected story.)
+  Everything `renderCall` would have shown (the request args) is available
+  inside `renderResult`'s 4th `args` parameter instead, so the whole card
+  is still built in one place.
+- **Live progress widget** (`monitorWidget`, same file): while the job runs
+  in the background, a two-line widget renders above the editor via
+  `context.ui.setWidget` — `⠋ Legion (<job-label>) | 0:12` then `[RUNNING]
+  2/3 experts finished`. `<job-label>` is the job's own short slug
+  (`shortAgentName(accepted.jobId)`, `legion-` prefix stripped) so two or
+  more concurrent dispatches (a multi-part request fanning out into several
+  `legion_dispatch` calls) render as distinguishable widgets rather than
+  identical ones. The bracketed label/detail pair comes from
+  `describePhase(job.lastProgressDetails)`, which reads the structured
+  `phase` tag every `reportProgress` call attaches (`LegionDispatchPhase`:
+  `decomposing | running | retrying | expanding | synthesizing | escalated
+  | rejected | completed | failed`, `PHASE_LABELS` uppercases each for
+  display) instead of guessing from prose substrings. `phaseDetail()`
+  fills in the live specifics per phase — e.g. `running` shows
+  `${completed}/${total} experts finished` once both counts are reported
+  (aggregated job-wide across every task in a multi-task dispatch, not
+  per-task — see §4.0/§3.4's `jobProgress` note), `escalated` names the
+  governance reasons that triggered it. Two independent signals can close
+  the widget: the spinner tick itself recognizing a terminal
+  `PHASE_LABELS` value, or the separate loop polling `job.status` — closing
+  on *either* avoids a widget that lingers on `[COMPLETED]` with a still-
+  ticking clock if the two signals briefly disagree (live-confirmed
+  failure mode before this was added).
 - `approval: "exec"` — the call itself goes through the host's normal tool
   approval flow; HOTL governance (§7) is a separate, later gate entirely
   unrelated to this approval.
@@ -594,51 +695,65 @@ every branched attempt gets independently re-verified before synthesis) but
   explanation for when the model does look at it; the description is what
   makes it look in the first place.
 
-### 6.2 The tree card (`dispatch-card.ts`)
+### 6.2 The framed card (`dispatch-card.ts`)
 
-`renderDispatchResult(result, theme, args)` builds one `Container` with a
-single `Text` node — a genuine recursive tree, not a flat indented list:
+`renderDispatchResult(result, options, theme, args)` builds on the same
+`framedBlock`/`renderStatusLine` primitives the built-in `task` tool uses —
+a bordered, state-colored, titled block with named sections — instead of a
+bespoke widget, replacing an earlier `Container`+single-`Text`-node tree
+render. Four render paths, chosen by `options.isPartial`/`details.state`:
+
+- **`options.isPartial`** (live progress, mid-turn): a single `framedBlock`
+  with a `running`-state `renderStatusLine` header and no sections —
+  `buildProgressText()`'s own spinner/ellipsis are stripped since
+  `renderStatusLine` draws its own render-time-accurate spinner frame.
+- **`details.state === "running"`** (accepted, job dispatched): header +
+  an optional `Task` section (the enhanced assignment text, rendered as
+  markdown via `markdownSection`) + a `Mixtures` section.
+- **Error** (`result.isError` or missing `details`): header (`error` state)
+  + `Task` section + an `Error` section showing whatever request info is
+  available (`requestNodes(args)`, no per-task breakdown yet) plus the
+  error message as the tree's final leaf.
+- **Final result**: header (`success` state, "synthesis complete") + `Task`
+  + `Mixtures` + a `Result` section (the synthesized answer, markdown).
+
+**The `Mixtures` section** (`MIXTURES_SECTION_LABEL`) is still a genuine
+recursive tree (`renderTree(nodes, prefix)` over `TreeNode[]` — `├─`/`└─`
+per sibling, `│  `/`   ` continuation prefix for children), built by
+`metadataNodes(args, details, theme)`:
 
 ```
-├─ task: "Execute two tasks: t1 (reviewer) reviews sample-bug.js for b…"
-├─ tasks: 2 explicit
-│  ├─ t1 (reviewer)
-│  │  ├─ attempts: 3
-│  │  └─ models: zai/glm-4.5-flash, google-antigravity/gemini-2.5-flash, ...
-│  └─ t2 (coder)
-│     ├─ attempts: 3
-│     └─ models: commandcode/xiaomi/mimo-v2.5-pro
-├─ job: LegionExecuteTwoTasksT1ReviewerReviews
-└─ results deliver asynchronously
+├─ ref: legion-two-independent-reviews
+└─ experts:
+   ├─ coder: ~2 models
+   └─ reviewer: ~1 model
 ```
 
-`renderTree(nodes, prefix)` recurses over a `TreeNode[]` (`{ label,
-children? }`), computing `├─`/`└─` per sibling and a `│  `/`   ` continuation
-prefix for each node's children — real parent-child connector continuation,
-not extra leading spaces on an otherwise-flat line (the first attempt at
-this card got that wrong and was corrected after live feedback).
+`ref` is the job id, muted-styled, matching what escalation/completion
+messages elsewhere in the transcript reference for cross-referencing — kept
+as "ref" rather than "job" so it doesn't read as a peer of `Task`. The
+`experts:` breakdown groups attempts by dispatched **agent**
+(`expertsByAgentNodes`, sourced from `DispatchAccepted.taskBreakdown` —
+`TaskAttemptSummary[]`, computed in `dispatch-service.ts`'s
+`summarizeAttemptsByTask`), not by internal task id: two tasks that happen
+to resolve to the same agent merge into one line with a combined, deduped
+model count. `modelCountLabel()` reports **distinct model identifiers**
+(`new Set(models).size`), not raw attempt counts — summing attempt counts
+instead of deduping previously showed "~6 models" for two tasks sharing the
+same 3-model ensemble (live-confirmed bug), overstating the ensemble's
+actual model diversity. The `~` prefix is deliberate: adaptive
+expansion/fallback can add more attempts (and swap in a different model)
+after this snapshot was taken, so the count shown is a floor, not a final
+tally. When the caller didn't supply explicit `tasks` (the auto-decompose
+gap, §3.6) there's no per-task breakdown yet, so the section falls back to
+a single flat `experts: ~N models` line using `details.attemptModels`.
+Model names themselves are never listed — which model backs a given attempt
+can change out from under this snapshot via the same expansion that grows
+the count, so naming them here would read as more settled than it is.
 
-**Per-task nesting, not flat aggregate lines:** `attempts`/`models` are
-per-task quantities — for an explicit-tasks call, each task's own node gets
-its own `attempts`/`models` children, sourced from
-`DispatchAccepted.taskBreakdown` (`TaskAttemptSummary[]`, computed in
-`dispatch-service.ts`'s `summarizeAttemptsByTask` by grouping the preview
-plan's attempts by `taskId`). `job` stays a top-level sibling — it identifies
-the *whole* async dispatch, not any single task, so it doesn't belong nested
-under one. When `taskBreakdown` is empty (the auto-decompose gap, §3.6), the
-card falls back to the old flat aggregate `attempts`/`models` lines at the
-top level, since there's no per-task detail to nest yet.
-
-**No title/header line inside the card.** The host already renders one
-generic header above every tool block from the tool's own `label`
-("Legion") — a second title inside the card duplicated it. This card is
-body-only, matching the same pattern used for the host's own built-in tool
-result cards.
-
-**Error path:** if `result.isError` or `details` is missing, the card shows
-whatever request info is available (`requestNodes(args)`, no breakdown) plus
-the error message as the tree's final leaf, styled via `theme.fg?.("error",
-...)`.
+**No title/header line duplicated inside the card body.** `renderStatusLine`
+already draws the "Legion" title as part of the frame's own header — a
+second title inside a section would duplicate it.
 
 ## 7. HOTL governance — async, never blocking (`domain/governance.ts`, `host-dispatch-service.ts`)
 
@@ -738,6 +853,13 @@ return path — an earlier draft of this design proposed exactly that and was
 corrected during the grilling session before any code was written (see the
 grill log, and ADR 0002's consequences section).
 
+**Live-verified:** a real dispatch tripped a genuine `costCeiling` escalation
+mid-run (`[ESCALATED] waiting on a human — cost`), the interactive
+approve/reject/edit menu rendered and responded correctly to arrow-key
+navigation, selecting `edit` opened the free-text note prompt, and the
+submitted note correctly resumed the job to completion with the edit
+incorporated into the final synthesis.
+
 ## 8. Config surface
 
 Legion resolves configuration through one explicit precedence chain, from
@@ -785,7 +907,8 @@ The decomposer is intentionally independent from expert role policies:
 | `embedding.baseUrl`/`model`/`apiKey` | strings | Embedding provider settings. |
 | `maxConcurrentExperts` | `≥1` | Total in-flight expert cap. |
 | `verifyCommand` | string | Optional branch verification command. |
-| `decisionTimeoutMs` | ms | HOTL decision timeout. |
+| `decisionTimeoutMs` | ms | HOTL decision timeout (default 30 min, `DEFAULT_DECISION_TIMEOUT_MS`). |
+| `expertTimeoutMs` | ms | Wall-clock cap per expert attempt, forwarded to the host's `ExecutorOptions.maxRuntimeMs` (default 5 min, `DEFAULT_EXPERT_TIMEOUT_MS`). Without this, an expert stuck retrying a tool call outside its grant can hang the whole ensemble indefinitely — no error, no retry, no escalation (live-confirmed failure mode). A capped attempt fails cleanly instead, and synthesis proceeds with whichever experts did respond. |
 
 `mergeLegionConfig()` applies defaults and validates every field. The
 `resolveLegionConfig()` helper is pure and is used by tests to prove nested
@@ -818,17 +941,21 @@ to produce, not process-lifecycle bookkeeping the host already solves.
 
 ## 10. Agent personas (`agents/*.md`)
 
-Four bundled personas, each a real Oh-My-Pi `AgentDefinition` (frontmatter +
-system prompt), loaded via `parseAgent` (§4.1):
+Six bundled personas, each a real Oh-My-Pi `AgentDefinition` (frontmatter +
+system prompt), loaded via `parseAgent` (§4.1). Five are real ensemble
+attempts, dispatchable via `legion_dispatch`; one is planning-only and
+excluded from dispatch entirely:
 
 | Persona | Tools | Notes |
 |---|---|---|
-| `legion-coder` | read, edit, write, grep, glob, lsp, bash | Implementation specialist — makes the change directly, verifies its own work before finishing. |
-| `legion-reviewer` | read, grep, glob, lsp *(no edit/write/bash)* | Read-only by design — a reviewer that can silently edit the thing it's reviewing isn't an independent check. |
+| `legion-coder` | read, edit, write, grep, glob, lsp, bash | Implementation specialist — makes the change directly, verifies its own work before finishing. Live-confirmed it can and will run `bash` including `git`, gated only by `git-commit-guard` (§4.4), not by its own tool grant. |
+| `legion-reviewer` | read, grep, glob, lsp *(no edit/write/bash)* | Read-only by design — a reviewer that can silently edit the thing it's reviewing isn't an independent check. Live-confirmed the tool grant is correctly enforced (a prompt asking it to edit a file structurally cannot succeed). |
 | `legion-tester` | read, edit, write, grep, glob, lsp, bash | Writes/runs tests for the assignment. |
 | `legion-generalist` | full toolset | Fallback persona for `fallbackDecomposition`'s single-task path and any role with no dedicated persona. |
+| `legion-scout` | read, grep, glob, lsp | Investigates a design/plan discussion and proposes the single sharpest next clarifying question, with options and a recommendation. Powers `/skill:centurion` (§12) — never dispatched any other way. |
+| `legion-decomposer` | — (no `tools:`; a planning-only prompt, not an ensemble attempt) | **Not dispatchable.** Excluded from `legion_dispatch`'s role resolution (`host-dispatch-service.ts` filters `LEGION_DECOMPOSER_AGENT_NAME` out of the resolvable set) and from the native `task` tool (`task-tool-guard.ts` blocks any `legion-*` name by prefix, this one included). Decides whether/how to split a task and enhances terse assignments into self-contained briefs before Legion dispatches them — it never itself produces an ensemble answer. |
 
-Every persona's system prompt includes two sections worth knowing about:
+Every dispatchable persona's system prompt includes two sections worth knowing about:
 
 - **"You are one of several independent attempts"** — explicitly tells the
   model it will never see sibling experts' output and they'll never see
@@ -848,31 +975,44 @@ name — same discovery mechanism the host uses for every other agent
 
 ## 11. Testing strategy
 
-- **Domain** (`tests/domain/*.test.ts`): every pure function
+- **Domain** (`tests/domain/*.test.ts`: `concurrency`, `config`,
+  `decomposition`, `dispatch`, `governance`): every pure function
   (`buildDispatchPlan`, `resolveAgentName`, `humanReadableJobId`,
-  `evaluateGovernance`, `clusterExpertAnswers`, config merging,
-  decomposition parsing/fallback, the `Semaphore` concurrency primitive) is
-  tested with zero host dependencies — this is the whole point of the DDD
-  layering (ADR 0001).
-- **Application** (`tests/application/*.test.ts`): `DispatchService`
-  exercised against hand-written `ExpertExecutor`/`JobScheduler`/
-  `OrchestrationRepository`/`SynthesisRunner`/`BranchMerger` doubles — covers
-  the full dispatch→decompose→synthesize→govern→persist flow including
-  escalation, human decisions, rejection-fails-the-job behavior, the
-  concurrency cap actually bounding overlap, and winner-only branch
-  merge-back (only the synthesis-selected attempt's branch merges; every
-  sibling is discarded; a rejected job discards everything), without any
-  real host SDK import.
-- **Infrastructure** (`tests/infrastructure/*.test.ts`): adapters tested
-  against minimal fakes of the host surfaces they wrap (`agent-loader`,
-  `task-tool-guard`, `embedding-provider`'s fallback ordering,
-  `host-dispatcher`, `host-config`, `host-orchestration-repository`'s
-  journal replay).
-- **Presentation** (`tests/presentation/*.test.ts`): `dispatch-tool.test.ts`
-  checks the tool wires the service resolver correctly; `dispatch-card.test.ts`
-  inspects the rendered `Container`/`Text` tree directly (`Container.children`,
-  `Text.getText()`) for both the auto-decompose and explicit-tasks-with-
-  per-task-nesting cases, plus the error path.
+  `evaluateGovernance`, config merging including `expertTimeoutMs`/
+  `decisionTimeoutMs`, decomposition parsing/fallback, the `Semaphore`
+  concurrency primitive) is tested with zero host dependencies — this is the
+  whole point of the DDD layering (ADR 0001).
+- **Application** (`tests/application/*.test.ts`: `dispatch-service`,
+  `synthesis-service`): `DispatchService` exercised against hand-written
+  `ExpertExecutor`/`JobScheduler`/`OrchestrationRepository`/
+  `SynthesisRunner`/`BranchMerger` doubles — covers the full
+  dispatch→decompose→synthesize→govern→persist flow including escalation,
+  human decisions, rejection-fails-the-job behavior, the concurrency cap
+  actually bounding overlap, winner-only branch merge-back, and
+  job-wide progress aggregation across every task in a multi-task dispatch
+  (a shared `jobProgress` counter, not a per-task total — see §4.0/§3.4),
+  without any real host SDK import.
+- **Infrastructure** (`tests/infrastructure/*.test.ts`): `agent-loader`,
+  `agent-execution-context` (including a module-duplication regression test
+  that reproduces the re-bound-extension scenario behind §4.3's `globalThis`
+  fix via a genuinely separate file copy), `aggregator-prompts`,
+  `centurion-skill` (a content regression test guarding the
+  `/skill:centurion` invocation-syntax fix, §12), `embedding-provider`'s
+  fallback ordering, `git-commit-guard`, `host-config`, `host-dispatcher`,
+  `host-orchestration-repository`'s journal replay, `irc-tool-guard`,
+  `llm-decomposer`, `packaging` (pack-and-extract smoke test proving every
+  bundled agent/rule/skill file — including `skills/centurion/`— actually
+  ships and is discoverable), `task-tool-guard`.
+- **Presentation** (`tests/presentation/*.test.ts`: `dispatch-card`,
+  `dispatch-tool`): `dispatch-card.test.ts` renders the card against a real
+  built-in theme (`getThemeByName("dark")`) and asserts on the rendered,
+  ANSI-stripped text for the auto-decompose, explicit-tasks-with-per-task-
+  nesting, distinct-model-dedup, and error cases. `dispatch-tool.test.ts`
+  checks the tool wires the service resolver correctly, `describePhase()`'s
+  phase→label/detail mapping, the tool description's documented role-string
+  convention, the live widget's per-job label, and that the widget clears
+  as soon as either the spinner tick or the status-poll loop observes a
+  terminal phase (not only when both agree).
 - **`tests/smoke.test.ts`** — confirms the Bun test runner itself is wired
   (intentionally trivial; a canary, not a feature test).
 - **`scripts/benchmark.ts`** — a live, real-model comparison harness (not
@@ -880,11 +1020,59 @@ name — same discovery mechanism the host uses for every other agent
   models). Runs a small fixed task set through Legion vs. a single model
   and reports the diff; benchmark results are a manual validation step, not
   a CI-enforced claim.
+- **Live smoke testing** — beyond `bun test`, this project has been driven
+  end-to-end through a real interactive `omp` session (every dispatch
+  scenario, both guards, `/skill:centurion`, config precedence, HOTL
+  escalation, and a real `SIGINT` mid-dispatch), not just unit-tested in
+  isolation. See `docs/smoke-test-findings-legion-pt2.md` for the findings
+  log this surfaced, and this document's guard/widget sections above for
+  which claims are now live-verified versus unit-tested-only.
+
+## 12. `/skill:centurion` — ensemble-driven clarifying questions (`skills/centurion/SKILL.md`, `agents/legion-scout.md`)
+
+A grilling-style session — one question at a time, decisions are the
+human's, never proceed until confirmed — except the question itself is
+produced by a real `legion_dispatch` round to the `scout` role every time,
+instead of one model guessing alone. Reserved for design decisions where a
+wrong early call is expensive, not routine clarification: each question is
+a full ensemble round-trip (multiple independent experts + synthesis,
+occasionally a HOTL escalation), so a session can take minutes per question,
+capped at 8 questions with an explicit human check-in if the cap is
+reached before the discussion settles.
+
+**Invocation — a real fixed bug, not a design note:** the skill sets
+`disable-model-invocation: true` (deliberately — a slow/costly skill like
+this should never fire on loose trigger-phrase matching the way the
+platform's generic `grilling` skill does) and must be invoked explicitly via
+the literal `/skill:centurion <topic>` slash command
+(`@oh-my-pi/pi-coding-agent`'s `parseSkillInvocation` only recognizes the
+`/skill:<name>` form — a bare `/centurion` is never parsed as a command at
+all and silently falls through as ordinary chat text). The skill's own
+`SKILL.md` previously advertised triggering on the literal string
+`"/centurion"` in its description, which this host has never recognized;
+combined with `disable-model-invocation` hiding the skill from the system
+prompt (so the model couldn't fall back to noticing the phrase on its own),
+the skill was live-confirmed completely unreachable before this was fixed —
+two separate live attempts (one that accidentally phrase-matched a
+different, generic skill instead, one that matched nothing at all and had
+the primary agent freelance a one-shot `legion_dispatch` call on its own
+judgment) both failed to invoke `centurion` at all. `tests/infrastructure/centurion-skill.test.ts`
+guards the corrected invocation text against regressing.
+
+Each round: compose a self-contained scout assignment (the destination,
+the decision log so far, relevant codebase facts already found — a scout
+has zero access to the surrounding conversation), dispatch it via
+`legion_dispatch` with an explicit `tasks: [{ role: "scout", ... }]`
+(skipping auto-decomposition since the role is already known), **await**
+the result (the one legitimate case where blocking on `legion_dispatch` is
+correct, per the skill's own instructions), present the synthesized
+question/options/recommendation to the human clearly attributed as the
+ensemble's output, and append to the running decision log before continuing.
 
 Full gate before any change lands: `bun run typecheck && bun run lint &&
 bun test`.
 
-## 12. What Legion deliberately does not build
+## 13. What Legion deliberately does not build
 
 See ADR 0002 and spec §3/§10 for the full reasoning; in one line each: no
 parallel subagent lifecycle or resume system (the host's persisted-revive
