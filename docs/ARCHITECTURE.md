@@ -734,25 +734,72 @@ grill log, and ADR 0002's consequences section).
 
 ## 8. Config surface
 
-Full resolution chain, in order, for one session:
+**Full resolution chain, highest priority first** (verified directly against
+the host's `getPluginSettings`, `@oh-my-pi/pi-coding-agent/extensibility/plugins/loader.ts`):
 
-1. **Bundled defaults** (`domain/constants.ts`): `DEFAULT_MODEL_MAP = {}`
-   (no role has a model until configured), `DEFAULT_HOTL_THRESHOLDS`
-   (`confidenceFloor: 0.6`, `disagreementThreshold: 0.4`, `costCeiling:
-   100_000`), `DEFAULT_ENSEMBLE_SIZE: 3`, `DEFAULT_EMBEDDING_SETTINGS`
-   (`baseUrl: http://127.0.0.1:11434`, `model: nomic-embed-text`),
-   `DEFAULT_MAX_CONCURRENT_EXPERTS: 4` (§4.0).
-2. **Project/user settings** (`infrastructure/host-config.ts`):
-   `loadLegionConfig(cwd)` calls the host's `getPluginSettings("omp-legion",
-   cwd)` — reads `.omp/plugin-overrides.json`'s `settings["omp-legion"]`
-   object (this is JSON, not YAML — `config.yml` is the host's own fixed,
-   non-extensible settings schema and cannot carry third-party plugin
-   config). Each setting may arrive as a real object or a JSON-encoded
-   string (host settings UIs sometimes only support flat string fields) —
-   `parseJsonSetting` handles both.
-3. **Per-request overrides** (`dispatch-service.ts`'s `applyConfigDefaults`):
+1. **Per-request overrides** (`dispatch-service.ts`'s `applyConfigDefaults`):
    the caller's `modelMap`/`defaultEnsembleSize` in the actual
-   `legion_dispatch` call merge on top of session config, per-role.
+   `legion_dispatch` call merge on top of everything below, per-role.
+2. **Project settings** — `<project>/.omp/plugin-overrides.json`'s
+   `settings["omp-legion"]` object. This is what `config.example.json`
+   documents and what most projects actually author by hand.
+3. **Global settings** — `~/.omp/plugins/omp-plugins.lock.json`'s
+   `settings["omp-legion"]` object. **Not** a hand-authored file the way
+   project overrides are — it's a lockfile, populated by whatever `omp
+   plugin` tooling manages global plugin config, not something this
+   project's docs walk through editing directly.
+4. **Legion's own bundled defaults** (`domain/constants.ts`):
+   `DEFAULT_MODEL_MAP = {}` (no role has a model until configured),
+   `DEFAULT_HOTL_THRESHOLDS`, `DEFAULT_ENSEMBLE_SIZE: 3`,
+   `DEFAULT_EMBEDDING_SETTINGS`, `DEFAULT_MAX_CONCURRENT_EXPERTS: 4` (§4.0).
+
+Steps 2-3 are merged by the host, *before* Legion ever sees a settings
+object — `loadLegionConfig(cwd)` (`infrastructure/host-config.ts`) calls
+`getPluginSettings("omp-legion", cwd)`, whose actual implementation is:
+
+```ts
+const global = runtimeConfig.settings[pluginName] || {};
+const project = projectOverrides.settings?.[pluginName] || {};
+return { ...global, ...project };  // project wins
+```
+
+This is JSON, not YAML, in both files — `config.yml` is the host's own
+fixed, non-extensible settings schema and cannot carry third-party plugin
+config. Each individual setting may arrive as a real object or a
+JSON-encoded string (host settings UIs sometimes only support flat string
+fields) — `parseJsonSetting` handles both.
+
+**The merge above is shallow, not deep — a real gotcha depending on how you
+author settings.** `{...global, ...project}` replaces whole top-level keys
+of the settings object; it does not merge the *fields inside* a nested
+object like `hotl`. Legion's settings schema supports two authoring styles
+for exactly this reason (`LEGION_SETTING_KEYS`, `infrastructure/host-config.ts`):
+
+- **Flat dotted keys** (`"hotl.confidenceFloor"`, `"hotl.costCeiling"`, ...
+  as literal top-level property names — the same convention the host
+  settings UI itself uses, `package.json`'s `omp.settings`). Each one is
+  its own independent key in the merged settings object, so project
+  overriding `hotl.confidenceFloor` alone leaves global's
+  `hotl.costCeiling`/`hotl.disagreementThreshold`/`hotl.failureRateCeiling`
+  untouched — verified in `tests/infrastructure/host-config.test.ts`.
+- **A nested object** (`"hotl": {...}` as one JSON blob — what
+  `config.example.json` shows, since it's clearer to author a full config
+  file by hand this way). If project sets a *partial* `hotl` object while
+  global has a fuller one, project's object replaces global's **entirely**
+  — the fields project didn't specify do not fall back to global's values,
+  they fall through to Legion's own built-in defaults instead, since
+  neither Legion nor the flat keys have any visibility into what global's
+  now-discarded `hotl` object used to contain.
+- `parseLegionPluginSettings` prefers the flat key over the same field
+  inside a nested object when both are present
+  (`settings[flatKey] ?? nestedObject.field`), regardless of which layer
+  either came from.
+
+**Practical implication:** if you maintain both a global and a per-project
+config and expect *partial* per-project overrides to compose with the rest
+of your global settings, use the flat dotted-key form for anything you
+override per-project. The nested-object form is fine when a layer sets a
+*complete* object, or when you don't maintain a global config at all.
 
 **Config keys** (see `config.example.json` for a full worked example):
 

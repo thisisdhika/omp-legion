@@ -1,5 +1,6 @@
 {
 	"//": "Example .omp/plugin-overrides.json for omp-legion. This is the host's real plugin-settings mechanism (getPluginSettings, JSON only — not config.yml, which is the host's own fixed settings schema and can't be extended by third-party plugins). Copy the \"omp-legion\" object below into your project's .omp/plugin-overrides.json under \"settings\". Every field is optional — anything you omit falls back to the defaults in src/domain/constants.ts.",
+	"//priority": "Resolution order (highest wins): this project file > ~/.omp/plugins/omp-plugins.lock.json's global settings for this plugin > Legion's built-in defaults. The host merges project-over-global with a SHALLOW merge per top-level key — if you also maintain global settings and want a partial project override to compose with the rest (not replace it wholesale), use flat dotted keys like \"hotl.confidenceFloor\" instead of nesting under \"hotl\". See docs/ARCHITECTURE.md §8 for the full explanation.",
 
 	"settings": {
 		"omp-legion": {
