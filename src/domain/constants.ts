@@ -5,6 +5,14 @@ export const DISPATCH_STRATEGIES = [
 	DISPATCH_STRATEGY_SELF_CONSISTENCY,
 	DISPATCH_STRATEGY_DIVERSE,
 ] as const;
+/**
+ * Cycled by attempt index for self-consistency sampling — deliberate,
+ * verified sampling diversity across N identical-model attempts, rather
+ * than whatever the provider happens to default to (arXiv 2502.00674's
+ * Self-MoA thesis assumes real sampling diversity exists; it previously
+ * didn't). Focused -> balanced -> creative.
+ */
+export const DEFAULT_TEMPERATURE_LADDER = [0.2, 0.6, 1.0] as const;
 export const DEFAULT_DECOMPOSITION_TASK_ID = "task";
 export const DEFAULT_DECOMPOSITION_AGENT = "task";
 export const DEFAULT_DECOMPOSITION_ROLE = "generalist";

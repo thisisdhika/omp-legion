@@ -335,7 +335,49 @@ LLM decomposer used to be asked to invent an `agent` field and would produce
 unresolvable names, causing "Cannot cluster expert results without output."
 `decomposition.ts`'s LLM contract now excludes `agent` entirely and
 force-normalizes every parsed task's `agent` to `DEFAULT_DECOMPOSITION_AGENT`
-regardless of what the LLM output.
+regardless of what the LLM output. (That same error string can still occur
+today if every expert for a task genuinely crashes — see §4.1a — but it no
+longer takes the whole dispatch down when it does.)
+
+### 4.1a Model-selection warnings and the temperature ladder (`domain/dispatch.ts`, Phase 4/6)
+
+Two silent config ambiguities `buildDispatchPlan` used to trust without
+comment, now surfaced via `DispatchPlan.warnings` (reported once per job via
+`context.reportProgress`, deduplicated per role):
+
+- **Self-consistency with multiple models configured.** `modelsForAttempts`
+  has always used `selection.models[0]` as "the strongest" — nothing
+  validated that a `modelMap` entry actually lists its models
+  strongest-first, or warned that every model after the first is simply
+  never sampled under this strategy. `selectionWarning` now flags a role
+  with `strategy: "self-consistency"` and more than one configured model.
+- **Diverse strategy with `ensembleSize` smaller than the model list.**
+  `modelsForAttempts`'s diverse branch cycles `models[index %
+  models.length]` — if `ensembleSize < models.length`, the trailing models
+  are configured but mathematically unreachable at that ensemble size,
+  silently. `selectionWarning` flags this too, naming exactly which
+  configured models are unreachable.
+
+**Temperature ladder** (`temperatureForAttempts`): self-consistency sampling
+previously had no explicit temperature/seed control anywhere — N identical
+-model attempts rode entirely on whatever the provider happened to default
+to, undocumented and unverified (a real gap against the Self-MoA thesis,
+arXiv 2502.00674, the design already cited). Traced the actual host
+mechanism: `ExecutorOptions.settings?: Settings` (a full settings object a
+caller may supply per spawn) flows into `createSubagentSettings`'s snapshot,
+and `sdk.ts` reads `settings.get("temperature")` straight into the model
+completion call. `HostExpertExecutor.run()` now constructs
+`Settings.isolated({ temperature: execution.attempt.temperature })` per
+attempt — `DEFAULT_TEMPERATURE_LADDER = [0.2, 0.6, 1.0]` (focused → balanced
+→ creative), cycled by attempt index, overridable per role via
+`RoleModelPolicy.temperatureLadder`. Left at the provider default (`
+undefined` → omitted from the constructed settings) for "diverse" strategy
+unless a ladder is explicitly configured, since model diversity already
+provides decorrelation there. Incidentally fixed a second bug found while
+tracing this: `HostExpertExecutor` previously passed no `settings` field at
+all, meaning every spawn silently discarded whatever session-level settings
+existed (`runSubprocess` falls back to a blank `Settings.isolated()` when
+given none) — not just missing temperature control specifically.
 
 ### 4.2 Native `task` tool guard (`infrastructure/task-tool-guard.ts`)
 
@@ -719,6 +761,7 @@ Full resolution chain, in order, for one session:
 | `modelMap.<role>.models` | `string[]` | Models available to that role, e.g. `["anthropic/claude-fable-5"]`. |
 | `modelMap.<role>.strategy` | `"self-consistency" \| "diverse"` | `self-consistency` (default): every attempt samples the *first* listed model N times. `diverse`: attempts cycle round-robin through the full model list. |
 | `modelMap.<role>.ensembleSize` | `1`–`16` | Attempts for that role; falls back to `defaultEnsembleSize`. |
+| `modelMap.<role>.temperatureLadder` | `number[]` | Overrides `DEFAULT_TEMPERATURE_LADDER` for self-consistency sampling (§4.1a), cycled by attempt index. Ignored for "diverse" strategy unless explicitly set. |
 | `hotl.confidenceFloor` | `0`–`1` | Escalate if synthesis confidence (top cluster's dominance) falls below this. |
 | `hotl.disagreementThreshold` | `0`–`1` | Escalate if fragmentation (§7.0 — distinct-answer count, not `1 - confidence`) exceeds this. |
 | `hotl.costCeiling` | tokens | Escalate if a task's **mean** tokens per attempt exceeds this (§7.0 — not a sum). |

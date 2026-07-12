@@ -4,6 +4,7 @@ import {
 	DEFAULT_DECOMPOSITION_AGENT,
 	DEFAULT_DISPATCH_STRATEGY,
 	DEFAULT_ENSEMBLE_SIZE,
+	DEFAULT_TEMPERATURE_LADDER,
 	DISPATCH_STRATEGIES,
 	LEGION_AGENT_PREFIX,
 	MAX_ENSEMBLE_SIZE,
@@ -25,6 +26,14 @@ export const roleModelPolicySchema = z.object({
 		.min(MIN_ENSEMBLE_SIZE)
 		.max(MAX_ENSEMBLE_SIZE)
 		.optional(),
+	/**
+	 * Overrides the default self-consistency temperature ladder (see
+	 * temperatureForAttempts) for this role. Cycled by attempt index, same as
+	 * the model list for "diverse" strategy. Ignored for "diverse" strategy
+	 * unless explicitly set — model diversity already provides decorrelation
+	 * there, so temperature stays at provider default unless asked for.
+	 */
+	temperatureLadder: z.array(z.number().min(0).max(2)).min(1).optional(),
 });
 
 export const dispatchTaskSchema = z.object({
@@ -89,11 +98,22 @@ export interface DispatchAttempt {
 	readonly description?: string;
 	readonly model: string;
 	readonly index: number;
+	/**
+	 * Undefined means "use the provider's own default" — never force a value.
+	 * Self-consistency samples get a real ladder (see temperatureForAttempts)
+	 * so N identical-model attempts have deliberate, not incidental, sampling
+	 * diversity — previously the whole point of self-consistency (genuinely
+	 * varied samples of the same model) rode entirely on whatever the
+	 * provider happened to default to.
+	 */
+	readonly temperature?: number;
 }
 
 export interface DispatchPlan {
 	readonly task: string;
 	readonly attempts: readonly DispatchAttempt[];
+	/** Non-fatal config smells worth surfacing to a human, e.g. an ambiguous self-consistency model order. See buildDispatchPlan. */
+	readonly warnings: readonly string[];
 }
 
 export interface DispatchRecord {
@@ -195,6 +215,32 @@ function availableModels(
 	};
 }
 
+/**
+ * Neither ambiguity below is fatal — dispatch still proceeds — but both are
+ * silent, easy-to-miss config mistakes worth surfacing to a human rather
+ * than leaving as an undocumented assumption about array order.
+ */
+function selectionWarning(
+	role: string,
+	selection: { models: string[]; strategy: DispatchStrategy },
+	ensembleSize: number,
+): string | undefined {
+	if (
+		selection.strategy === DEFAULT_DISPATCH_STRATEGY &&
+		selection.models.length > 1
+	) {
+		return `Role "${role}" is configured for self-consistency with multiple models (${selection.models.join(", ")}) — only the first, "${selection.models[0]}", is ever sampled. List your strongest model first, or use strategy "diverse" if you meant to spread across all of them.`;
+	}
+	if (
+		selection.strategy === "diverse" &&
+		ensembleSize < selection.models.length
+	) {
+		const unreachable = selection.models.slice(ensembleSize);
+		return `Role "${role}" is configured for diverse sampling across ${selection.models.length} models, but ensembleSize ${ensembleSize} only ever reaches the first ${ensembleSize} (${selection.models.slice(0, ensembleSize).join(", ")}). Configured but unreachable at this ensemble size: ${unreachable.join(", ")}.`;
+	}
+	return undefined;
+}
+
 function modelsForAttempts(selection: {
 	models: string[];
 	strategy: DispatchStrategy;
@@ -209,6 +255,32 @@ function modelsForAttempts(selection: {
 		if (!model) throw new Error("Model selection produced no model.");
 		return model;
 	});
+}
+
+/**
+ * Undefined entries mean "leave temperature at the provider's own default."
+ * Self-consistency gets a real ladder (a configured `temperatureLadder`, or
+ * DEFAULT_TEMPERATURE_LADDER) cycled by attempt index — deliberate sampling
+ * diversity across N identical-model attempts. "Diverse" strategy leaves
+ * temperature alone unless a ladder was explicitly configured, since model
+ * diversity already provides decorrelation there.
+ */
+function temperatureForAttempts(
+	strategy: DispatchStrategy,
+	ensembleSize: number,
+	ladder: readonly number[] | undefined,
+): (number | undefined)[] {
+	if (
+		strategy !== DEFAULT_DISPATCH_STRATEGY &&
+		(!ladder || ladder.length === 0)
+	)
+		return Array(ensembleSize).fill(undefined);
+	const activeLadder =
+		ladder && ladder.length > 0 ? ladder : DEFAULT_TEMPERATURE_LADDER;
+	return Array.from(
+		{ length: ensembleSize },
+		(_, index) => activeLadder[index % activeLadder.length],
+	);
 }
 
 /**
@@ -239,6 +311,8 @@ export function buildDispatchPlan(
 	const attempts: DispatchAttempt[] = [];
 	let attemptIndex = 0;
 	const taskIds = new Set<string>();
+	const warnedRoles = new Set<string>();
+	const warnings: string[] = [];
 
 	for (const task of request.tasks ?? []) {
 		if (taskIds.has(task.id))
@@ -248,8 +322,21 @@ export function buildDispatchPlan(
 		const selection = availableModels(policy, defaultModel, isAvailable);
 		const ensembleSize = policy?.ensembleSize ?? request.defaultEnsembleSize;
 		const models = modelsForAttempts({ ...selection, ensembleSize });
+		const temperatures = temperatureForAttempts(
+			selection.strategy,
+			ensembleSize,
+			policy?.temperatureLadder,
+		);
 
-		for (const model of models) {
+		if (!warnedRoles.has(task.role)) {
+			const warning = selectionWarning(task.role, selection, ensembleSize);
+			if (warning) {
+				warnedRoles.add(task.role);
+				warnings.push(warning);
+			}
+		}
+
+		for (const [attemptOffset, model] of models.entries()) {
 			attempts.push({
 				id: makeAttemptId(attemptIndex, task.id),
 				taskId: task.id,
@@ -258,11 +345,12 @@ export function buildDispatchPlan(
 				assignment: task.assignment,
 				description: task.description,
 				model,
+				temperature: temperatures[attemptOffset],
 				index: attemptIndex,
 			});
 			attemptIndex += 1;
 		}
 	}
 
-	return { task: request.task, attempts };
+	return { task: request.task, attempts, warnings };
 }

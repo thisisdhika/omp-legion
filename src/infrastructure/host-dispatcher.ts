@@ -1,5 +1,6 @@
 import { tmpdir } from "node:os";
 import type { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type {
 	IsolatedRunOptions,
@@ -130,6 +131,18 @@ export class HostExpertExecutor implements ExpertExecutor {
 			modelRegistry: this.#options.modelRegistry,
 			eventBus: this.#options.eventBus,
 			signal: execution.signal,
+			// Deliberately constructed rather than omitted: without this, every
+			// spawn silently discarded whatever session-level settings existed
+			// (runSubprocess falls back to a blank Settings.isolated() when given
+			// none at all). Passing execution.attempt.temperature here — set for
+			// self-consistency attempts, undefined otherwise — is what actually
+			// makes N samples of the same model produce genuinely varied output
+			// rather than riding on the provider's own untracked default.
+			settings: Settings.isolated(
+				execution.attempt.temperature !== undefined
+					? { temperature: execution.attempt.temperature }
+					: {},
+			),
 		};
 
 		const isolatedOptions: IsolatedRunOptions = {

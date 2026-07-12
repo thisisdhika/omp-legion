@@ -5,9 +5,11 @@
 		"omp-legion": {
 			"modelMap": {
 				"coder": {
-					"models": ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-luna"],
+					"//": "self-consistency samples only the first listed model -- list your strongest model first, and list just one to avoid the 'did you mean diverse?' warning.",
+					"models": ["anthropic/claude-fable-5"],
 					"strategy": "self-consistency",
-					"ensembleSize": 3
+					"ensembleSize": 3,
+					"temperatureLadder": [0.2, 0.6, 1.0]
 				},
 				"reviewer": {
 					"models": ["anthropic/claude-fable-5", "openai-codex/gpt-5.6-luna"],

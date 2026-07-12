@@ -210,6 +210,32 @@ function failedResult(
 		error: message,
 	};
 }
+
+/**
+ * Built when every expert for a task failed and `synthesizer.synthesize`
+ * has nothing to cluster (clusterExpertAnswers throws "Cannot cluster
+ * expert results without output" in exactly this case). Without this, that
+ * throw propagates through the outer Promise.all and fails the *entire*
+ * multi-task dispatch, discarding any sibling tasks that succeeded — one
+ * task with zero surviving experts should be this task's own bad outcome,
+ * not everyone else's. `failureRate` on the resulting metrics will be 1.0,
+ * which the existing failureRateCeiling governance check (Phase 3) already
+ * escalates correctly — no separate "did synthesis fail" plumbing needed.
+ */
+function fallbackSynthesis(taskId: string, error: unknown): SynthesisResult {
+	const message = error instanceof Error ? error.message : String(error);
+	return {
+		taskId,
+		answer: `Every expert attempt for this task failed; nothing to synthesize (${message}).`,
+		confidence: 0,
+		disagreement: 1,
+		clusteringMethod: "rouge-l-fallback",
+		embeddingQuality: "degraded",
+		clusters: [],
+		synthesisUsed: false,
+	};
+}
+
 function applyConfigDefaults(
 	request: DispatchRequest,
 	config: LegionConfig | undefined,
@@ -520,6 +546,12 @@ export class DispatchService {
 			`Legion dispatch ${context.jobId} is running.`,
 			{ attempts: plan.attempts.length },
 		);
+		if (plan.warnings.length > 0) {
+			await context.reportProgress(
+				`Legion dispatch ${context.jobId} has config warnings.`,
+				{ warnings: plan.warnings },
+			);
+		}
 
 		let auditFailurePersisted = false;
 		try {
@@ -560,12 +592,17 @@ export class DispatchService {
 						results,
 						context.signal,
 					);
-					const synthesis = await this.#options.synthesizer.synthesize({
-						task: plan.task,
-						taskId,
-						experts: verifiedResults,
-						signal: context.signal,
-					});
+					let synthesis: SynthesisResult;
+					try {
+						synthesis = await this.#options.synthesizer.synthesize({
+							task: plan.task,
+							taskId,
+							experts: verifiedResults,
+							signal: context.signal,
+						});
+					} catch (error) {
+						synthesis = fallbackSynthesis(taskId, error);
+					}
 					const governance = evaluateGovernance({
 						metrics: {
 							confidence: synthesis.confidence,

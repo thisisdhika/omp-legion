@@ -705,6 +705,83 @@ describe("DispatchService", () => {
 		await expect(job(context())).rejects.toThrow(/rejected/);
 	});
 
+	test("turns an all-experts-failed task into a per-task outcome instead of killing sibling tasks", async () => {
+		// Simulates clusterExpertAnswers's real "Cannot cluster expert results
+		// without output" throw for a task with zero surviving experts, while a
+		// sibling task's synthesis succeeds normally.
+		class PartiallyThrowingSynthesizer implements SynthesisRunner {
+			async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+				if (input.taskId === "doomed") {
+					throw new Error("Cannot cluster expert results without output.");
+				}
+				return {
+					taskId: input.taskId,
+					answer: "fine answer",
+					confidence: 1,
+					disagreement: 0,
+					clusteringMethod: "embedding",
+					embeddingQuality: "real",
+					clusters: [
+						{
+							representativeAttemptId: input.experts[0]?.attemptId ?? "none",
+							attemptIds: input.experts.map((expert) => expert.attemptId),
+							size: input.experts.length,
+						},
+					],
+					synthesisUsed: false,
+				};
+			}
+		}
+
+		const scheduler = new DeferredScheduler();
+		const repository = new RecordingRepository();
+		const service = new DispatchService({
+			scheduler,
+			executor: new RecordingExecutor(),
+			synthesizer: new PartiallyThrowingSynthesizer(),
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0,
+				disagreementThreshold: 1,
+				costCeiling: 1_000_000,
+				failureRateCeiling: 0.99,
+			},
+		});
+
+		service.dispatch({
+			task: "Review two things",
+			tasks: [
+				{
+					id: "doomed",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "This will fail to synthesize",
+				},
+				{
+					id: "fine",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "This will not",
+				},
+			],
+			defaultEnsembleSize: 1,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+
+		// The point: "doomed"'s synthesis throwing doesn't take "fine" down with
+		// it -- the job still completes, with both tasks' outcomes recorded.
+		const summary = await job(context());
+
+		expect(repository.record?.state).toBe("completed");
+		expect(summary).toContain("doomed");
+		expect(summary).toContain("fine");
+		expect(summary).toContain("Every expert attempt for this task failed");
+	});
+
 	test("caps total concurrent expert attempts at maxConcurrentExperts", async () => {
 		let inFlight = 0;
 		let maxObserved = 0;

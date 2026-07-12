@@ -1,6 +1,18 @@
 # Algorithm Audit & Hardening Plan — v2 (final)
 
-**Status:** live plan. Supersedes `algorithm-audit-and-hardening-v1.md` (kept for provenance). This pass deepens the v1 audit with additional correctness findings and adds research-grounded algorithmic upgrades aimed specifically at the project's actual goal: making the ensemble's output genuinely competitive with (or exceed) a gated frontier model on coding tasks, not just "orchestrate without crashing."
+**Status:** all 6 committed phases implemented and unit-tested; **none live-verified yet**. Supersedes `algorithm-audit-and-hardening-v1.md` (kept for provenance). This pass deepens the v1 audit with additional correctness findings and adds research-grounded algorithmic upgrades aimed specifically at the project's actual goal: making the ensemble's output genuinely competitive with (or exceed) a gated frontier model on coding tasks, not just "orchestrate without crashing."
+
+**Closeout summary (Phases 1-6):**
+1. **Isolation** — every attempt runs in its own copy-on-write worktree; only the synthesis-selected winner's branch ever merges onto the real repo.
+2. **Execution-grounded consensus** — an optional `verifyCommand` independently re-verifies each code-mutating attempt's isolated branch, promoting a verified-passing attempt over a merely-popular one.
+3. **Governance recalibration** — disagreement, failure rate, and cost are now three independent, correctly-scaled signals instead of two redundant ones; a decision-gate timeout that's a genuine race, not just a passed-down signal.
+4. **Model-selection smartness** — silent self-consistency/diverse config ambiguities now surface as warnings.
+5. **Robustness** — an all-failed task can no longer take its siblings down with it.
+6. **Diversity/sampling control** — self-consistency attempts get a real, deliberate temperature ladder instead of riding on provider defaults.
+
+Two items were investigated and explicitly *not* implemented as originally scoped, with reasoning recorded in place: Phase 2 reuses the project's own verify command rather than LLM-synthesizing novel test inputs (a deliberate v1 scope-down); Phase 3's per-task delivery decoupling turned out to need a materially different tool contract (multiple job ids per dispatch) given the host's one-job-one-final-text `AsyncJobManager` model, so a smaller real improvement (answer text in progress reports) shipped instead. Phase 3 item 6 (empirically re-tuning clustering thresholds) and the two "not committed" items (multi-agent debate, adaptive ensemble sizing) remain open — all three need either live model access or a stable foundation this plan just finished building.
+
+**What "not yet live-verified" means concretely:** everything above passed `bun run typecheck && bun run lint && bun test` (80/80 as of this closeout) against hand-written fakes/doubles. None of it has been exercised against a real host session with real models, a real git repo, and a real `verifyCommand` — that is the necessary next step before treating any of this as production-ready, and is intentionally out of scope for this pass per the user's own instruction to hold off on live retesting during this implementation phase.
 
 **Rule this doc follows** (same discipline as the spec): every finding names the exact file/mechanism it's grounded in; every research citation is a real source fetched this session, not a recalled impression.
 
@@ -129,16 +141,19 @@ Phases are in dependency order — each assumes the previous has landed.
 6. Empirically re-tune clustering thresholds against real expert-output pairs (extend `scripts/benchmark.ts` to log cluster-merge decisions for both the text-based and execution-based paths). **Deferred** — needs a real live session with real models; not something achievable without live verification.
 
 ### Phase 4 — Model-selection smartness (independent, can slot in anytime after Phase 1)
-1. Warn (at minimum) or resolve via host model-registry metadata (at best) when a self-consistency role's configured model list isn't clearly strongest-first, instead of silently trusting array order.
-2. Warn when a "diverse" role's `ensembleSize` is smaller than its configured `models` list, since part of the configured diversity is then silently unreachable.
+**Status: implemented, unit-tested, not yet live-verified.**
+1. ~~Warn (at minimum) or resolve via host model-registry metadata (at best)...~~ **Done, warn-only**: `selectionWarning` (`domain/dispatch.ts`), surfaced via `DispatchPlan.warnings` → `reportProgress`. Resolving via host model-registry metadata was not pursued — the host has no notion of "model strength ranking" to resolve against.
+2. ~~Warn when a "diverse" role's `ensembleSize` is smaller...~~ **Done**: same `selectionWarning` function, naming exactly which configured models are unreachable.
 
 ### Phase 5 — Robustness (independent, low-effort, can land anytime)
-1. Wrap `synthesizer.synthesize(...)` per-task so an all-experts-failed task produces a per-task failure result instead of an uncaught throw that kills sibling tasks.
+**Status: implemented, unit-tested, not yet live-verified.**
+1. ~~Wrap `synthesizer.synthesize(...)` per-task...~~ **Done**: `fallbackSynthesis` (`application/dispatch-service.ts`) catches any throw from the first synthesis call and produces a synthetic zero-confidence, `failureRate: 1.0` outcome instead — which the existing Phase 3 `failureRateCeiling` check already escalates correctly.
 
 ### Phase 6 — Diversity / sampling control (confirmed implementable — see §1.6b)
-1. Add `temperature` (and optionally `temperatureLadder` override on `RoleModelPolicy`) to the domain schema; compute per-attempt in `modelsForAttempts` — default ladder for self-consistency attempts, provider-default for diverse attempts unless configured.
-2. Thread it through `HostExpertExecutor.run()` via `Settings.isolated({ temperature: execution.attempt.temperature })` passed as `ExecutorOptions.settings`.
-3. While touching this: stop discarding session settings entirely on every spawn (currently no `settings` is passed at all) — construct the isolated settings object deliberately instead of relying on the host's blank-default fallback.
+**Status: implemented, unit-tested, not yet live-verified.**
+1. ~~Add `temperature` (and optionally `temperatureLadder` override on `RoleModelPolicy`)...~~ **Done**: `temperatureForAttempts` (`domain/dispatch.ts`), `DEFAULT_TEMPERATURE_LADDER = [0.2, 0.6, 1.0]`.
+2. ~~Thread it through `HostExpertExecutor.run()`...~~ **Done**, exactly as scoped.
+3. ~~Stop discarding session settings entirely on every spawn...~~ **Done** — the constructed `Settings.isolated(...)` object is now always passed, not omitted.
 
 ### Not committed — flagged for later consideration
 - Multi-agent debate / critique round (§2.2) — evidenced, but should follow Phases 1-3 so there's a stable foundation (isolation + a trustworthy confidence signal) to layer it on.

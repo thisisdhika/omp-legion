@@ -105,6 +105,200 @@ describe("dispatch planning", () => {
 		);
 	});
 
+	test("warns when self-consistency has multiple models configured", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier", "fallback"],
+					strategy: "self-consistency",
+					ensembleSize: 3,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.warnings).toHaveLength(1);
+		expect(plan.warnings[0]).toContain("reviewer");
+		expect(plan.warnings[0]).toContain("self-consistency");
+	});
+
+	test("warns when diverse ensembleSize leaves configured models unreachable", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["security", "general", "extra"],
+					strategy: "diverse",
+					ensembleSize: 2,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.warnings).toHaveLength(1);
+		expect(plan.warnings[0]).toContain("extra");
+	});
+
+	test("produces no warnings for an unambiguous configuration", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					strategy: "self-consistency",
+					ensembleSize: 3,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.warnings).toEqual([]);
+	});
+
+	test("applies the default temperature ladder to self-consistency attempts, cycling past its length", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					strategy: "self-consistency",
+					ensembleSize: 4,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts.map((attempt) => attempt.temperature)).toEqual([
+			0.2, 0.6, 1.0, 0.2,
+		]);
+	});
+
+	test("leaves temperature at the provider default for diverse strategy unless configured", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["security", "general"],
+					strategy: "diverse",
+					ensembleSize: 2,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(
+			plan.attempts.every((attempt) => attempt.temperature === undefined),
+		).toBe(true);
+	});
+
+	test("honors a configured temperatureLadder override", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					strategy: "self-consistency",
+					ensembleSize: 2,
+					temperatureLadder: [0, 1],
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts.map((attempt) => attempt.temperature)).toEqual([0, 1]);
+	});
+
 	test("rejects duplicate task ids before dispatch", () => {
 		const request = dispatchRequestSchema.parse({
 			task: "Review the change",
