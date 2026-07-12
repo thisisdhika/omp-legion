@@ -1,6 +1,6 @@
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+
 import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 
@@ -63,7 +63,6 @@ export function createHostDispatchService(
 			parentArtifactManager:
 				ctx.sessionManager.getArtifactManager() ?? undefined,
 			parentActiveModelPattern: activeModelSelector(ctx),
-			parentAgentId: MAIN_AGENT_ID,
 			agents,
 			eventBus,
 		}),
