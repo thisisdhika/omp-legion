@@ -75,7 +75,11 @@ beforeAll(async () => {
 });
 
 describe("packaging — installed-package discovery matches source checkout", () => {
-	test("rules/legion-search-tool-bm25.md, every bundled persona, and every bundled skill ship in the tarball", () => {
+	test("rules/legion-dispatch.md, rules/legion-search-tool-bm25.md, every bundled persona, and every bundled skill ship in the tarball", () => {
+		expect(() =>
+			readFileSync(join(packed.root, "rules/legion-dispatch.md"), "utf-8"),
+		).not.toThrow();
+
 		expect(() =>
 			readFileSync(
 				join(packed.root, "rules/legion-search-tool-bm25.md"),
@@ -96,6 +100,12 @@ describe("packaging — installed-package discovery matches source checkout", ()
 	});
 
 	test("packed files are byte-identical to the source checkout", () => {
+		const dispatchRuleSrc = join(REPO_ROOT, "rules/legion-dispatch.md");
+		const dispatchRulePacked = join(packed.root, "rules/legion-dispatch.md");
+		expect(readFileSync(dispatchRulePacked, "utf-8")).toBe(
+			readFileSync(dispatchRuleSrc, "utf-8"),
+		);
+
 		const ruleSrc = join(REPO_ROOT, "rules/legion-search-tool-bm25.md");
 		const rulePacked = join(packed.root, "rules/legion-search-tool-bm25.md");
 		expect(readFileSync(rulePacked, "utf-8")).toBe(
@@ -116,23 +126,28 @@ describe("packaging — installed-package discovery matches source checkout", ()
 		);
 	});
 
-	test("packed rule is discoverable by the host rule loader", () => {
-		const rulePacked = join(packed.root, "rules/legion-search-tool-bm25.md");
-		const content = readFileSync(rulePacked, "utf-8");
-		const source = createSourceMeta(
-			"legion-packaging-smoke",
-			rulePacked,
-			"project",
-		);
-		const rule = buildRuleFromMarkdown(
-			basename(rulePacked),
-			content,
-			rulePacked,
-			source,
-			{ stripNamePattern: /\.md$/ },
-		);
-		expect(rule.name).toBe("legion-search-tool-bm25");
-		expect(rule.alwaysApply).toBe(true);
+	test("packed rules are discoverable by the host rule loader", () => {
+		for (const [file, expectedName] of [
+			["rules/legion-dispatch.md", "legion-dispatch"],
+			["rules/legion-search-tool-bm25.md", "legion-search-tool-bm25"],
+		] as const) {
+			const rulePacked = join(packed.root, file);
+			const content = readFileSync(rulePacked, "utf-8");
+			const source = createSourceMeta(
+				"legion-packaging-smoke",
+				rulePacked,
+				"project",
+			);
+			const rule = buildRuleFromMarkdown(
+				basename(rulePacked),
+				content,
+				rulePacked,
+				source,
+				{ stripNamePattern: /\.md$/ },
+			);
+			expect(rule.name).toBe(expectedName);
+			expect(rule.alwaysApply).toBe(true);
+		}
 	});
 
 	test("packed personas are discovered by the host over an OMP extension root", async () => {

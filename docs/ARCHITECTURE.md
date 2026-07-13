@@ -7,9 +7,18 @@ This document explains *how the shipped code implements those decisions* —
 every claim here is checked against the source at the paths cited, not
 aspirational.
 
-The primary agent's plain-language usage contract lives in the
-`legion_dispatch` tool description in
+For the plain-language usage contract the primary agent reads at runtime, see
+[`rules/legion-dispatch.md`](../rules/legion-dispatch.md) — auto-discovered
+via the host's extension-package rule scanning
+(`discovery/omp-plugins.ts`, verified live this session, see §11) —
+alongside the `legion_dispatch` tool description itself in
 [`src/presentation/dispatch-tool.ts`](../src/presentation/dispatch-tool.ts).
+The rule is intended for the primary agent (awareness of when/how to reach
+for the tool); there is no native mechanism to scope a bundled `alwaysApply`
+rule to the top-level session only, so it is also visible to any subagent's
+own natural rule discovery — harmless in practice since `legion_dispatch`
+is never in a dispatched expert's own `tools:` grant, but worth knowing if
+this file grows to carry primary-only-relevant detail.
 
 ---
 
@@ -70,6 +79,7 @@ agents/               legion-coder.md, legion-reviewer.md (read-only), legion-te
                       legion-decomposer.md (internal planning-only — never itself dispatchable,
                       excluded from both legion_dispatch's role resolution and the native task tool)
 skills/centurion/SKILL.md  ensemble-driven clarifying-question loop, invoked via /skill:centurion
+rules/legion-dispatch.md   primary agent's plain-language legion_dispatch usage contract
 rules/legion-search-tool-bm25.md  shared MCP tool-discovery guidance for expert personas
 ```
 
@@ -138,8 +148,9 @@ caller did exactly this (pasted a full file into `task`, left `assignment`
 as a one-line label), reasoning `task` was the primary content and
 `assignment` a display label — backwards. `dispatchTaskSchema.assignment`/
 `.description` and `dispatchRequestSchema.task` now carry explicit
-`.describe()` text stating the real relationship, and the tool's own top-level
-description states it under an "IMPORTANT" clause.
+`.describe()` text stating the real relationship, the tool's own top-level
+description states it under an "IMPORTANT" clause, and `rules/legion-dispatch.md`
+repeats it in the always-loaded usage rule.
 
 ### 3.3 Immediate planning (`DispatchService.dispatch`, `src/application/dispatch-service.ts`)
 
@@ -730,8 +741,10 @@ every branched attempt gets independently re-verified before synthesis) but
   decisions — *even when the user's own request never mentions review or this
   tool by name*), when not to (routine low-stakes work — ensembling has real
   latency/token cost), its async/non-blocking behavior, and the no-recursive-
-  dispatch constraint. The description is the canonical primary-agent usage
-  contract; expert-only rules remain separate.
+  dispatch constraint. `rules/legion-dispatch.md` (§1) restates the same
+  contract for the primary agent as an always-loaded rule — belt and
+  suspenders, not the sole channel; the tool description alone already
+  carries the load-bearing "when."
 
 ### 6.2 The framed card (`dispatch-card.ts`)
 

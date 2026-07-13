@@ -19,6 +19,7 @@ import {
 	buildDecomposerPrompt,
 	formatAvailableRoles,
 } from "./aggregator-prompts";
+import { defaultResolveModel } from "./host-llm";
 
 /**
  * Read-only tool grant for the built-in fallback definition (used only when
@@ -103,15 +104,6 @@ function isRetryableDecomposerError(error: unknown): boolean {
 		/maximum context/i,
 	];
 	return !FATAL_PATTERNS.some((p) => p.test(msg));
-}
-
-function defaultResolveModel(
-	registry: ModelRegistry,
-	selector: string,
-): Model<Api> | undefined {
-	const slash = selector.indexOf("/");
-	if (slash < 0) return registry.find(selector, "");
-	return registry.find(selector.slice(0, slash), selector.slice(slash + 1));
 }
 
 export class HostLlmDecomposer implements TaskDecomposer {

@@ -15,6 +15,16 @@ export interface HostLlmOptions {
 	readonly temperature?: number;
 }
 
+/** Resolves a bare "provider/id" model selector against a registry — the default `resolveModel` for any host LLM caller that doesn't have a richer resolver (e.g. `ctx.models.resolve`) available. */
+export function defaultResolveModel(
+	registry: ModelRegistry,
+	selector: string,
+): Model<Api> | undefined {
+	const slash = selector.indexOf("/");
+	if (slash < 0) return registry.find(selector, "");
+	return registry.find(selector.slice(0, slash), selector.slice(slash + 1));
+}
+
 function responseText(
 	content: Context["messages"][number] | undefined,
 ): string {

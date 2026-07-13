@@ -94,6 +94,13 @@ export function createHostDispatchService(
 				model,
 				modelRegistry: ctx.modelRegistry,
 				cwd: ctx.cwd,
+				// Reuses the decomposer's own configured model list as a retry
+				// ladder — both are single-model utility completions (not
+				// ensemble dispatch), so a separate config surface just for the
+				// aggregator isn't warranted. See HostLlmAggregatorOptions'
+				// fallbackModels doc comment for why this exists at all.
+				fallbackModels: config.decomposer?.models,
+				resolveModel: (selector) => ctx.models.resolve(selector),
 			}),
 		}),
 		repository: createHostOrchestrationRepository(ctx.sessionManager),

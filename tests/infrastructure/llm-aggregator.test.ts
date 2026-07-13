@@ -1,0 +1,128 @@
+import { describe, expect, test } from "bun:test";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+
+import type { AggregatorInput } from "../../src/domain/synthesis";
+import { HostLlmAggregator } from "../../src/infrastructure/llm-aggregator";
+
+function fakeModel(id: string): Model<Api> {
+	return { provider: "test", id } as unknown as Model<Api>;
+}
+
+function input(): AggregatorInput {
+	return {
+		task: "Pick the sharpest next question",
+		taskId: "task-1",
+		experts: [],
+		clusters: [],
+		clusteringMethod: "embedding",
+	};
+}
+
+const registry = {} as ModelRegistry;
+
+describe("HostLlmAggregator", () => {
+	// Regression test for a live-confirmed incident: the aggregator's own
+	// model (captured once at session_start, unrelated to any expert's
+	// model) failed to resolve from a background job, and there was no
+	// retry of any kind — the aggregator threw immediately, relying
+	// entirely on SynthesisService's own degrade-to-raw-answer fallback.
+	// That fallback must stay as the last resort, but a plain transient
+	// model failure should try other configured models first.
+	test("uses the primary model when it succeeds, without touching fallbacks", async () => {
+		const calls: string[] = [];
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/fallback"],
+			resolveModel: () => fakeModel("fallback"),
+			complete: async (options) => {
+				calls.push(options.model.id);
+				return "primary answer";
+			},
+		});
+
+		const result = await aggregator.synthesize(input());
+
+		expect(result).toBe("primary answer");
+		expect(calls).toEqual(["primary"]);
+	});
+
+	test("retries the next fallback model when the primary fails", async () => {
+		const calls: string[] = [];
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/fallback-1", "provider/fallback-2"],
+			resolveModel: (selector) => fakeModel(selector.split("/")[1] ?? selector),
+			complete: async (options) => {
+				calls.push(options.model.id);
+				if (options.model.id !== "fallback-2") {
+					throw new Error("Model not found gpt-5.6-luna");
+				}
+				return "fallback answer";
+			},
+		});
+
+		const result = await aggregator.synthesize(input());
+
+		expect(result).toBe("fallback answer");
+		expect(calls).toEqual(["primary", "fallback-1", "fallback-2"]);
+	});
+
+	test("skips a fallback selector that fails to resolve to a real model", async () => {
+		const calls: string[] = [];
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/unresolvable", "provider/real"],
+			resolveModel: (selector) =>
+				selector === "provider/real" ? fakeModel("real") : undefined,
+			complete: async (options) => {
+				calls.push(options.model.id);
+				if (options.model.id === "primary") throw new Error("unavailable");
+				return "real answer";
+			},
+		});
+
+		const result = await aggregator.synthesize(input());
+
+		expect(result).toBe("real answer");
+		expect(calls).toEqual(["primary", "real"]);
+	});
+
+	test("rethrows the last error when the primary and every fallback fail", async () => {
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/fallback"],
+			resolveModel: () => fakeModel("fallback"),
+			complete: async (options) => {
+				throw new Error(`${options.model.id} unavailable`);
+			},
+		});
+
+		await expect(aggregator.synthesize(input())).rejects.toThrow(
+			"fallback unavailable",
+		);
+	});
+
+	test("rethrows the primary error when no fallbackModels are configured", async () => {
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			complete: async () => {
+				throw new Error("Model not found gpt-5.6-luna");
+			},
+		});
+
+		await expect(aggregator.synthesize(input())).rejects.toThrow(
+			"Model not found gpt-5.6-luna",
+		);
+	});
+});
