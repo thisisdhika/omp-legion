@@ -117,9 +117,40 @@ describe("evaluateIrcCall — isolation policy", () => {
 		});
 	});
 
-	test("preserves host/system control for an explicit host sender", () => {
+	test("blocks an explicit host sender from contacting a Legion expert", () => {
+		const decision = evaluateIrcCall(hostContext, {
+			op: "send",
+			to: "legion-reviewer",
+		});
+		expect(decision.block).toBe(true);
+	});
+
+	test("blocks the primary agent from sending directly to a Legion expert", () => {
+		const decision = evaluateIrcCall(undefined, {
+			op: "send",
+			to: "legion-reviewer",
+		});
+		expect(decision).toEqual({
+			block: true,
+			reason:
+				"Primary agent may not use live IRC to contact legion-* experts; legion_dispatch is fire-and-forget, not interactive collaboration.",
+		});
+	});
+
+	test("blocks the primary agent from waiting on a Legion expert", () => {
+		const decision = evaluateIrcCall(undefined, {
+			op: "wait",
+			from: "legion-reviewer",
+		});
+		expect(decision.block).toBe(true);
+	});
+
+	test("allows the primary agent to contact non-Legion IRC targets", () => {
 		expect(
-			evaluateIrcCall(hostContext, { op: "send", to: "legion-reviewer" }),
+			evaluateIrcCall(undefined, { op: "send", to: "project-agent" }),
+		).toEqual({ block: false });
+		expect(
+			evaluateIrcCall(undefined, { op: "wait", from: "project-agent" }),
 		).toEqual({ block: false });
 	});
 
@@ -189,15 +220,15 @@ describe("agent-execution-context — async survival + isolation", () => {
 		expect(seen.sort()).toEqual([...names].sort());
 	});
 
-	test("explicit system context is readable and allowed through evaluateIrcCall", async () => {
+	test("blocks explicit system context from contacting a Legion expert", async () => {
 		await runWithDispatchContext(systemContext, async () => {
 			expect(currentDispatchContext()?.senderKind).toBe("system");
 			expect(
 				evaluateIrcCall(currentDispatchContext(), {
 					op: "send",
 					to: "legion-coder",
-				}),
-			).toEqual({ block: false });
+				}).block,
+			).toBe(true);
 		});
 	});
 });

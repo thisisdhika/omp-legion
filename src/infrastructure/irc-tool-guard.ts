@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { isLegionAgentName } from "./agent-loader";
 
 import {
 	type DispatchContext,
@@ -18,26 +19,19 @@ import {
  * blocked every legion-* agent. That over-blocked: it also stopped a legion-*
  * expert from legitimately reporting to its parent, and it left the control
  * plane unauthenticated.
- *
  * New policy (see evaluateIrcCall):
- *  - Non-expert senders (parent/host/system) → full IRC rights.
+ *  - Primary/host/system senders → block direct `send`/`wait` calls targeting
+ *    legion-* agents; Legion dispatch is fire-and-forget, not interactive.
+ *  - Other non-expert senders → full IRC rights.
  *  - Expert with unknown routing (no authenticated allowedDestination) →
  *    FAIL CLOSED (block). A detection gap must never let an expert coordinate.
  *  - Expert addressing anything other than its authenticated parent route →
  *    block. This covers direct expert-to-expert, spoofed/aliased peer names,
  *    and parallel (`to: "all"`) communication — exactly what would correlate
  *    ensemble attempts and defeat the reason ensembling can beat a single model.
- *  - No dispatch context at all → **allow**, not block. Only Legion's own
- *    HostExpertExecutor ever wraps a call with runAsDispatchedAgent — a
- *    context is set if and only if this call originated from a legion-*
- *    dispatch. A native `task`-tool subagent (any non-legion-* agent) never
- *    gets wrapped at all, so it always has undefined context; the old
- *    fail-closed default here blocked those agents from IRC entirely, live-
- *    confirmed (a "ScopedRedundancyAudit" native subagent hit "no dispatch
- *    context" and lost IRC access despite never being a Legion expert).
- *    Mirrors git-commit-guard.ts's own established policy
- *    (`context?.senderKind !== "expert"` → allow) — only ever restrict a
- *    call this guard can actually attribute to a legion-* expert.
+ *  - No dispatch context at all otherwise allows IRC. Only Legion's own
+ *    HostExpertExecutor ever wraps a call with runAsDispatchedAgent — a context
+ *    is set if and only if this call originated from a legion-* dispatch.
  */
 const IRC_TOOL_NAME = "irc";
 
@@ -46,6 +40,8 @@ const EXPERT_ISOLATION_REASON =
 
 const EXPERT_UNKNOWN_ROUTING_REASON =
 	"IRC blocked: expert dispatch context has no authenticated parent route (fail-closed).";
+const PRIMARY_LEGION_TARGET_REASON =
+	"Primary agent may not use live IRC to contact legion-* experts; legion_dispatch is fire-and-forget, not interactive collaboration.";
 
 export interface IrcCallInput {
 	op?: string;
@@ -74,10 +70,15 @@ export function evaluateIrcCall(
 	const op = input?.op;
 	if (op === "inbox") return { block: false };
 
-	// Non-expert senders (parent/host/system) are always trusted — allow. This
-	// also covers undefined context: only a legion-* dispatch ever sets one
-	// (see this function's own doc comment), so no context means this call
-	// was never a legion-* expert in the first place — never block it here.
+	// Primary/host/system senders may not address Legion experts directly over
+	// IRC; Legion dispatch is fire-and-forget rather than interactive.
+	if (
+		context?.senderKind !== "expert" &&
+		((op === "send" && isLegionAgentName(input?.to ?? "")) ||
+			(op === "wait" && isLegionAgentName(input?.from ?? "")))
+	) {
+		return { block: true, reason: PRIMARY_LEGION_TARGET_REASON };
+	}
 	if (context?.senderKind !== "expert") return { block: false };
 
 	// Expert tier — fail closed when routing is unknown.
