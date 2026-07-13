@@ -4,6 +4,7 @@ import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-regis
 
 import type { AggregatorInput } from "../../src/domain/synthesis";
 import { HostLlmAggregator } from "../../src/infrastructure/llm-aggregator";
+import { AGGREGATOR_SYSTEM_PROMPT } from "../../src/infrastructure/aggregator-prompts";
 
 function fakeModel(id: string): Model<Api> {
 	return { provider: "test", id } as unknown as Model<Api>;
@@ -124,5 +125,115 @@ describe("HostLlmAggregator", () => {
 		await expect(aggregator.synthesize(input())).rejects.toThrow(
 			"Model not found gpt-5.6-luna",
 		);
+	});
+
+	test("preserves the original error when primary fails and no fallbacks configured", async () => {
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			complete: async () => {
+				throw new Error("original primary error");
+			},
+		});
+
+		await expect(aggregator.synthesize(input())).rejects.toThrow(
+			"original primary error",
+		);
+	});
+	test("aborts while fallback request is still in flight", async () => {
+		let started = false;
+		let deferred: {
+			resolve: (value: string) => void;
+			reject: (error: Error) => void;
+		} | null = null;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/fb1"],
+			resolveModel: () => fakeModel("fb1"),
+			complete: async (options, _system, _prompt, signal) => {
+				if (options.model.id === "primary") {
+					throw new Error("primary failed");
+				}
+				started = true;
+				const promise = new Promise<string>((resolve, reject) => {
+					deferred = { resolve, reject };
+				});
+				if (signal?.aborted) {
+					deferred = null;
+					throw new Error("aborted");
+				}
+				signal?.addEventListener("abort", () => {
+					if (deferred) {
+						deferred.reject(new Error("aborted"));
+						deferred = null;
+					}
+				});
+				return promise;
+			},
+		});
+
+		const controller = new AbortController();
+		const promise = aggregator.synthesize(input(), controller.signal);
+		await Promise.resolve(); // let the primary fail and fallback start
+		controller.abort();
+
+		await expect(promise).rejects.toThrow("aborted");
+		expect(started).toBe(true); // fallback attempt was started
+	});
+
+	test("aborts after fallback settles late", async () => {
+		let started = false;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/fb1"],
+			resolveModel: () => fakeModel("fb1"),
+			complete: async (options, _system, _prompt, signal) => {
+				if (options.model.id === "primary") {
+					throw new Error("primary failed");
+				}
+				started = true;
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				if (signal?.aborted) throw new Error("aborted");
+				return "fallback answer";
+			},
+		});
+
+		const controller = new AbortController();
+		const promise = aggregator.synthesize(input(), controller.signal);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		controller.abort();
+
+		await expect(promise).rejects.toThrow("aborted");
+		expect(started).toBe(true); // fallback attempt was started
+	});
+
+	test("fallback model receives the same prompt and system prompt as primary", async () => {
+		let receivedPrompt = "";
+		let receivedSystemPrompt: string[] = [];
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/repo",
+			fallbackModels: ["provider/fb1"],
+			resolveModel: () => fakeModel("fb1"),
+			complete: async (options, systemPrompt, prompt) => {
+				if (options.model.id === "primary") {
+					throw new Error("primary failed");
+				}
+				receivedPrompt = prompt;
+				receivedSystemPrompt = systemPrompt;
+				return "fallback answer";
+			},
+		});
+
+		await aggregator.synthesize(input());
+
+		expect(receivedPrompt).toContain("Pick the sharpest next question");
+		expect(receivedSystemPrompt).toEqual(AGGREGATOR_SYSTEM_PROMPT);
 	});
 });
