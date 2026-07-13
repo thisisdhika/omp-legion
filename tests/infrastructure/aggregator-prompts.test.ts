@@ -22,6 +22,19 @@ describe("DECOMPOSER_SYSTEM_PROMPT (fallback)", () => {
 		expect(text).toContain("self-contained");
 		expect(text).toContain("Never fabricate");
 	});
+
+	// Regression test for a live-confirmed regression: after the decomposer
+	// gained real read/grep/glob tools, assignments got *shorter*, not
+	// longer -- models commonly treat a tool-call investigation as "doing the
+	// work" and then write a terse final answer, leaving what they found
+	// back in the investigation instead of transcribing it into the one
+	// string the expert actually receives. The prompt must explicitly name
+	// and forbid this collapse, not just encourage thoroughness in general.
+	test("explicitly forbids the investigate-then-write-a-short-answer collapse", () => {
+		expect(text).toMatch(
+			/short assignment.*(is not|isn't) efficient.*failure/i,
+		);
+	});
 });
 
 describe("buildDecomposerPrompt", () => {
@@ -29,6 +42,11 @@ describe("buildDecomposerPrompt", () => {
 		const prompt = buildDecomposerPrompt({ task: "review this" });
 		expect(prompt).toContain("review this");
 		expect(prompt).toContain("enhanced brief");
+	});
+
+	test("instructs transcribing investigated facts into the assignment itself", () => {
+		const prompt = buildDecomposerPrompt({ task: "review this" });
+		expect(prompt).toMatch(/[Tt]ranscribe/);
 	});
 });
 
