@@ -8,6 +8,7 @@ import {
 	createDispatchTool,
 	describePhase,
 } from "../../src/presentation/dispatch-tool";
+import { buildProgressText } from "../../src/presentation/spinner";
 
 let theme: Theme;
 beforeAll(async () => {
@@ -161,6 +162,11 @@ describe("describePhase", () => {
 			label: "QUEUED",
 			detail: "waiting to start",
 		});
+	});
+
+	test("does not treat total attempts as currently running", () => {
+		const text = buildProgressText("RUNNING — 2/3 experts finished", 0);
+		expect(text).not.toContain("(3 running)");
 	});
 });
 

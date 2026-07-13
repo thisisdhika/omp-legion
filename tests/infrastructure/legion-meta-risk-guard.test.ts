@@ -7,6 +7,7 @@ import {
 import {
 	LEGION_META_RISK_PATHS,
 	evaluateLegionMetaRiskCommit,
+	isSuccessfulLegionDispatchResult,
 } from "../../src/infrastructure/legion-meta-risk-guard";
 
 const expert: DispatchContext = {
@@ -16,6 +17,34 @@ const expert: DispatchContext = {
 	allowedDestination: LEGION_DISPATCH_PARENT_ROUTE,
 };
 
+describe("isSuccessfulLegionDispatchResult", () => {
+	test("requires successful experts and successful synthesis", () => {
+		expect(
+			isSuccessfulLegionDispatchResult(false, {
+				successfulAttemptCount: 1,
+				synthesisSucceeded: true,
+			}),
+		).toBe(true);
+		expect(
+			isSuccessfulLegionDispatchResult(false, {
+				successfulAttemptCount: 1,
+				synthesisSucceeded: false,
+			}),
+		).toBe(false);
+		expect(
+			isSuccessfulLegionDispatchResult(false, {
+				successfulAttemptCount: 0,
+				synthesisSucceeded: true,
+			}),
+		).toBe(false);
+		expect(
+			isSuccessfulLegionDispatchResult(true, {
+				successfulAttemptCount: 3,
+				synthesisSucceeded: true,
+			}),
+		).toBe(false);
+	});
+});
 const primary = undefined;
 
 describe("evaluateLegionMetaRiskCommit", () => {

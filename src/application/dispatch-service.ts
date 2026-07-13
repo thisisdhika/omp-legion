@@ -285,6 +285,7 @@ function fallbackSynthesis(taskId: string, error: unknown): SynthesisResult {
 		embeddingQuality: "degraded",
 		clusters: [],
 		synthesisUsed: false,
+		synthesisSucceeded: false,
 	};
 }
 
@@ -826,6 +827,12 @@ export class DispatchService {
 					failed: results.filter(
 						(result) => result.exitCode !== 0 || result.aborted === true,
 					).length,
+					successfulAttemptCount: results.filter(
+						(result) => result.exitCode === 0 && !result.aborted,
+					).length,
+					synthesisSucceeded: syntheses.every(
+						(synthesis) => synthesis.synthesisSucceeded === true,
+					),
 					syntheses: syntheses.length,
 				},
 			);
@@ -1334,14 +1341,24 @@ export class DispatchService {
 		signal: AbortSignal,
 		humanNote?: string,
 	): Promise<SynthesisResult> {
+		const successful = experts.some(
+			(result) => result.exitCode === 0 && !result.aborted,
+		);
+		if (!successful) {
+			return fallbackSynthesis(
+				taskId,
+				new Error("No expert attempts completed successfully."),
+			);
+		}
 		try {
-			return await this.#options.synthesizer.synthesize({
+			const result = await this.#options.synthesizer.synthesize({
 				task,
 				taskId,
 				experts,
 				humanNote,
 				signal,
 			});
+			return { ...result, synthesisSucceeded: true };
 		} catch (error) {
 			return fallbackSynthesis(taskId, error);
 		}

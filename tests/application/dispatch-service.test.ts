@@ -967,6 +967,44 @@ describe("DispatchService", () => {
 		expect(escalationReasons).toContain("failureRate");
 	});
 
+	test("reports zero confidence when every expert attempt fails", async () => {
+		const scheduler = new DeferredScheduler();
+		const repository = new RecordingRepository();
+		const synthesizer = new RecordingSynthesizer();
+		const service = new DispatchService({
+			scheduler,
+			executor: {
+				async run() {
+					throw new Error("provider unavailable");
+				},
+			},
+			synthesizer,
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0,
+				disagreementThreshold: 1,
+				costCeiling: 1_000_000,
+				failureRateCeiling: 1,
+			},
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+			defaultEnsembleSize: 3,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		expect(synthesizer.inputs).toHaveLength(0);
+		expect(repository.record?.syntheses?.[0]?.confidence).toBe(0);
+		expect(repository.record?.syntheses?.[0]?.disagreement).toBe(1);
+	});
+
 	test("auto-resolves an escalation to reject once the decision timeout elapses", async () => {
 		const scheduler = new DeferredScheduler();
 		const service = new DispatchService({

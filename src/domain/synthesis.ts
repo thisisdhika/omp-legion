@@ -61,6 +61,8 @@ export interface SynthesisResult {
 	readonly embeddingQuality: EmbeddingQuality;
 	readonly clusters: readonly AnswerCluster[];
 	readonly synthesisUsed: boolean;
+	/** False only for the dispatch service's explicit degraded fallback. */
+	readonly synthesisSucceeded?: boolean;
 }
 
 interface Answer {

@@ -69,16 +69,34 @@ function stagedFiles(): string[] {
 	}
 }
 
+export function isSuccessfulLegionDispatchResult(
+	isError: boolean,
+	details: unknown,
+): boolean {
+	if (isError || typeof details !== "object" || details === null) return false;
+	if (!("successfulAttemptCount" in details)) return false;
+	if (!("synthesisSucceeded" in details)) return false;
+	const successfulAttemptCount = details.successfulAttemptCount;
+	return (
+		typeof successfulAttemptCount === "number" &&
+		successfulAttemptCount > 0 &&
+		details.synthesisSucceeded === true
+	);
+}
+
 export function registerLegionMetaRiskGuard(api: ExtensionAPI): void {
 	let hasSecondOpinion = false;
+	const pendingDispatches = new Set<string>();
 	api.on("session_start", () => {
 		hasSecondOpinion = false;
+		pendingDispatches.clear();
 	});
 	api.on("tool_call", (event) => {
-		if (
-			event.toolName === LEGION_DISPATCH_TOOL_NAME ||
-			event.toolName === TASK_TOOL_NAME
-		) {
+		if (event.toolName === LEGION_DISPATCH_TOOL_NAME) {
+			pendingDispatches.add(event.toolCallId);
+			return;
+		}
+		if (event.toolName === TASK_TOOL_NAME) {
 			hasSecondOpinion = true;
 			return;
 		}
@@ -91,6 +109,14 @@ export function registerLegionMetaRiskGuard(api: ExtensionAPI): void {
 			hasSecondOpinion,
 		);
 		if (decision.block) return { block: true, reason: decision.reason };
+		return;
+	});
+	api.on("tool_result", (event) => {
+		if (event.toolName !== LEGION_DISPATCH_TOOL_NAME) return;
+		if (!pendingDispatches.delete(event.toolCallId)) return;
+		if (isSuccessfulLegionDispatchResult(event.isError, event.details)) {
+			hasSecondOpinion = true;
+		}
 		return;
 	});
 }

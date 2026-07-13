@@ -37,6 +37,10 @@ export interface LegionDispatchDetails {
 	readonly attemptCount: number;
 	readonly attemptModels: readonly string[];
 	readonly taskBreakdown: readonly TaskAttemptSummary[];
+	/** Number of expert attempts that produced a successful result. */
+	readonly successfulAttemptCount?: number;
+	/** Whether all synthesis stages produced usable synthesized content. */
+	readonly synthesisSucceeded?: boolean;
 	readonly resultText?: string;
 }
 
@@ -69,11 +73,7 @@ function progressPartial(
 		content: [
 			{
 				type: "text",
-				text: buildProgressText(
-					progress.phase,
-					progress.frame,
-					progress.attemptCount,
-				),
+				text: buildProgressText(progress.phase, progress.frame),
 			},
 		],
 		details: {
@@ -242,6 +242,8 @@ function buildDetails(
 	accepted: ReturnType<DispatchService["dispatch"]>,
 	state: LegionDispatchDetails["state"],
 	resultText?: string,
+	successfulAttemptCount?: number,
+	synthesisSucceeded?: boolean,
 ): LegionDispatchDetails {
 	return {
 		jobId: accepted.jobId,
@@ -250,6 +252,8 @@ function buildDetails(
 		attemptCount: accepted.attemptCount,
 		attemptModels: accepted.attemptModels,
 		taskBreakdown: accepted.taskBreakdown,
+		successfulAttemptCount,
+		synthesisSucceeded,
 		resultText,
 	};
 }
@@ -508,8 +512,20 @@ export function createDispatchTool(
 			}
 			const completed = service.getJob(accepted.jobId);
 			const resultText = completed?.resultText;
+			const progressDetails = completed?.lastProgressDetails;
+			const successfulAttemptCount =
+				typeof progressDetails?.successfulAttemptCount === "number"
+					? progressDetails.successfulAttemptCount
+					: 0;
+			const synthesisSucceeded = progressDetails?.synthesisSucceeded === true;
 			return finalResult(
-				buildDetails(accepted, "completed", resultText),
+				buildDetails(
+					accepted,
+					"completed",
+					resultText,
+					successfulAttemptCount,
+					synthesisSucceeded,
+				),
 				resultText,
 			);
 		},
