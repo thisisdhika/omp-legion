@@ -121,7 +121,17 @@ export class HostExpertExecutor implements ExpertExecutor {
 	 * one depending on when it happened to start.
 	 */
 	async prepareJob(): Promise<IsolationContext> {
-		return prepareIsolationContext(this.#options.cwd);
+		try {
+			return await prepareIsolationContext(this.#options.cwd);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (/git repository not found/i.test(message)) {
+				throw new Error(
+					"Legion requires cwd to be a git repository for isolated dispatch execution; run git init or dispatch from an existing repository.",
+				);
+			}
+			throw error;
+		}
 	}
 
 	async run(execution: ExpertExecution): Promise<ExpertResult> {

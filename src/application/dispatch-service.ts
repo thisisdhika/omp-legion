@@ -664,6 +664,10 @@ export class DispatchService {
 		parentToolCallId?: string,
 	): Promise<string> {
 		const decomposerAttempts: DecomposerAuditEvent[] = [];
+		// Validate isolation prerequisites before automatic decomposition or any
+		// model call. A missing git repository must fail immediately rather than
+		// spending minutes retrying a decomposer that can never run the dispatch.
+		const jobContext = await this.#options.executor.prepareJob?.();
 		const resolvedRequest = await this.#resolveRequest(
 			request,
 			context,
@@ -709,7 +713,6 @@ export class DispatchService {
 			// Prepared once for the whole job (not per attempt, not per task) so
 			// every concurrent attempt diffs against the same starting point —
 			// see ExpertExecutor.prepareJob's doc comment.
-			const jobContext = await this.#options.executor.prepareJob?.();
 
 			// Shared across every concurrent #dispatchTask call below so the
 			// "N/M experts finished" progress a live view reads reflects the

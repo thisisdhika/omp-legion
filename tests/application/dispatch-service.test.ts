@@ -394,6 +394,45 @@ describe("DispatchService", () => {
 		);
 	});
 
+	test("checks isolation prerequisites before automatic decomposition", async () => {
+		const scheduler = new DeferredScheduler();
+		let decomposed = false;
+		const executor: ExpertExecutor = {
+			async prepareJob() {
+				throw new Error(
+					"Legion requires cwd to be a git repository for isolated dispatch execution; run git init or dispatch from an existing repository.",
+				);
+			},
+			async run() {
+				throw new Error("must not run");
+			},
+		};
+		const service = new DispatchService({
+			scheduler,
+			executor,
+			decomposer: {
+				async decompose() {
+					decomposed = true;
+					return [];
+				},
+			},
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+		});
+
+		service.dispatch({ task: "Review the change" });
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+
+		await expect(job(context())).rejects.toThrow(
+			/ requires cwd to be a git repository /,
+		);
+		expect(decomposed).toBe(false);
+	});
+
 	test("uses session config defaults when request omits policy", () => {
 		const scheduler = new DeferredScheduler();
 		const service = new DispatchService({
