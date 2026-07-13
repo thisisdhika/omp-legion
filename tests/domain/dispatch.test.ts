@@ -20,7 +20,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -55,7 +54,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -114,7 +112,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "code",
-					agent: "coder",
 					role: "coder",
 					assignment: "Implement it",
 				},
@@ -141,7 +138,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -174,7 +170,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -206,7 +201,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -237,7 +231,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -270,7 +263,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -303,7 +295,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -335,13 +326,11 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "same",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "First",
 				},
 				{
 					id: "same",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Second",
 				},
@@ -372,7 +361,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "scout-1",
-					agent: "scout",
 					role: "scout",
 					assignment: "Pick the sharpest next question",
 				},
@@ -398,7 +386,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "audit",
-					agent: "security-auditor",
 					role: "security-auditor",
 					assignment: "Audit it",
 				},
@@ -424,7 +411,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -461,7 +447,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -495,7 +480,6 @@ describe("dispatch planning", () => {
 			tasks: [
 				{
 					id: "code",
-					agent: "coder",
 					role: "coder",
 					assignment: "Implement it",
 				},

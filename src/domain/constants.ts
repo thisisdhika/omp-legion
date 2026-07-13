@@ -14,7 +14,6 @@ export const DISPATCH_STRATEGIES = [
  */
 export const DEFAULT_TEMPERATURE_LADDER = [0.2, 0.6, 1.0] as const;
 export const DEFAULT_DECOMPOSITION_TASK_ID = "generalist";
-export const DEFAULT_DECOMPOSITION_AGENT = "generalist";
 export const DEFAULT_DECOMPOSITION_ROLE = "generalist";
 export const LEGION_AGENT_PREFIX = "legion-";
 /**

@@ -17,29 +17,28 @@ describe("task decomposition", () => {
 		expect(tasks).toEqual([
 			{
 				id: "inspect",
-				agent: "generalist",
 				role: "security",
 				assignment: "Inspect auth paths.",
 			},
 		]);
 	});
 
-	test("normalizes agent to the safe default even if the model invents one", () => {
-		// The decomposer LLM has no visibility into which host agent types are
-		// actually discoverable in a given project; an invented agent name here
-		// previously caused every dispatched attempt to fail with zero output.
+	test("ignores a model-supplied agent field", () => {
 		const tasks = parseDecompositionResponse(
 			'{"tasks":[{"id":"t1","agent":"reviewer","role":"security","assignment":"Inspect auth paths."}]}',
 		);
 
-		expect(tasks[0]?.agent).toBe("generalist");
+		expect(tasks[0]).toEqual({
+			id: "t1",
+			role: "security",
+			assignment: "Inspect auth paths.",
+		});
 	});
 
 	test("falls back to one general task", () => {
 		expect(fallbackDecomposition("Review the change")).toEqual([
 			{
 				id: "generalist",
-				agent: "generalist",
 				role: "generalist",
 				assignment: "Review the change",
 			},

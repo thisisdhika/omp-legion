@@ -190,7 +190,6 @@ describe("createDispatchTool", () => {
 				tasks: [
 					{
 						id: "review",
-						agent: "reviewer",
 						role: "reviewer",
 						assignment: "Review it",
 					},

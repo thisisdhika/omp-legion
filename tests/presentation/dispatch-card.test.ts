@@ -120,13 +120,11 @@ describe("renderDispatchResult", () => {
 			tasks: [
 				{
 					id: "t1",
-					agent: "task",
 					role: "coder",
 					assignment: "Find the bug",
 				},
 				{
 					id: "t2",
-					agent: "task",
 					role: "reviewer",
 					assignment: "Review the fix",
 				},
@@ -192,13 +190,11 @@ describe("renderDispatchResult", () => {
 			tasks: [
 				{
 					id: "t1",
-					agent: "task",
 					role: "reviewer",
 					assignment: "Review file A",
 				},
 				{
 					id: "t2",
-					agent: "task",
 					role: "reviewer",
 					assignment: "Review file B",
 				},
@@ -276,8 +272,8 @@ describe("renderDispatchResult", () => {
 		const args = dispatchRequestSchema.parse({
 			task: "Review and implement",
 			tasks: [
-				{ id: "t1", agent: "task", role: "reviewer", assignment: "Review it" },
-				{ id: "t2", agent: "task", role: "coder", assignment: "Implement it" },
+				{ id: "t1", role: "reviewer", assignment: "Review it" },
+				{ id: "t2", role: "coder", assignment: "Implement it" },
 			],
 		});
 		const card = renderDispatchResult(

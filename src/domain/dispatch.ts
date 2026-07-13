@@ -50,13 +50,6 @@ export const roleModelPolicySchema = z.object({
 
 export const dispatchTaskSchema = z.object({
 	id: z.string().trim().min(1),
-	// Never read: the actual dispatched agent is always resolved from `role`
-	// (see resolveAgentName below), never trusted from the caller or the LLM
-	// decomposer. Kept optional and unused rather than required, so a caller
-	// that omits it (as models routinely do, having no reason to know it's
-	// vestigial) doesn't hit a schema validation error over a field with no
-	// effect on dispatch.
-	agent: z.string().trim().min(1).optional(),
 	role: z
 		.string()
 		.trim()
@@ -68,7 +61,7 @@ export const dispatchTaskSchema = z.object({
 		.string()
 		.trim()
 		.describe(
-			"The complete, self-contained instruction this expert actually receives and acts on — not a short label. The expert receives task as secondary background context in their system prompt, but it is not the primary instruction; if the real content (file contents, constraints, what to focus on) only lives in task, the expert will not have it as their main directive. Put everything the expert needs to do the work here.",
+			"The complete, self-contained instruction this expert actually receives and acts on — not a short label. The expert receives task as secondary background context in their system prompt, but it is not the primary instruction; if the real content (file contents, constraints, what to focus on) only lives in task, the expert assignment is underspecified.",
 		),
 	description: z
 		.string()

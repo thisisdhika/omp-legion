@@ -193,7 +193,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -212,7 +211,6 @@ describe("DispatchService", () => {
 				return [
 					{
 						id: "review",
-						agent: "reviewer",
 						role: "reviewer",
 						assignment: "Review the change",
 					},
@@ -255,7 +253,6 @@ describe("DispatchService", () => {
 				return [
 					{
 						id: "review",
-						agent: "reviewer",
 						role: "reviewer",
 						assignment: "Review the change",
 					},
@@ -330,13 +327,11 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "t1",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review A",
 				},
 				{
 					id: "t2",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review B",
 				},
@@ -417,7 +412,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -453,7 +447,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -507,13 +500,11 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
 				{
 					id: "implement",
-					agent: "coder",
 					role: "coder",
 					assignment: "Implement it",
 				},
@@ -570,7 +561,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -656,7 +646,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -716,7 +705,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -749,7 +737,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -794,7 +781,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -864,7 +850,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -927,7 +912,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -969,7 +953,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -1032,13 +1015,11 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "doomed",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "This will fail to synthesize",
 				},
 				{
 					id: "fine",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "This will not",
 				},
@@ -1101,7 +1082,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -1141,7 +1121,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -1186,7 +1165,6 @@ describe("DispatchService", () => {
 			tasks: [
 				{
 					id: "review",
-					agent: "reviewer",
 					role: "reviewer",
 					assignment: "Review it",
 				},
@@ -1293,9 +1271,7 @@ describe("DispatchService", () => {
 		) {
 			return {
 				task: "Do the thing",
-				tasks: [
-					{ id: "task", agent: "coder", role: "coder", assignment: "Do it" },
-				],
+				tasks: [{ id: "task", role: "coder", assignment: "Do it" }],
 				modelMap: modelMap ?? {},
 				...extra,
 			};

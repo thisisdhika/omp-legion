@@ -2,19 +2,14 @@ import { z } from "zod";
 
 import type { DecomposerPolicy, LegionConfig } from "./config";
 import {
-	DEFAULT_DECOMPOSITION_AGENT,
 	DEFAULT_DECOMPOSITION_ROLE,
 	DEFAULT_DECOMPOSITION_TASK_ID,
 } from "./constants";
 import type { DispatchTask } from "./dispatch";
 
 /**
- * The decomposer LLM has no visibility into which host agent types are
- * actually discoverable in this project — asking it to invent an `agent`
- * value produced unresolvable names in practice (host dispatch failed with
- * zero expert output). Only `role` (Legion's own semantic tag, used for
- * modelMap lookup) is LLM-chosen; `agent` is always normalized to
- * DEFAULT_DECOMPOSITION_AGENT below, never trusted from the LLM's output.
+ * Only `role` (Legion's own semantic tag, used for modelMap lookup) is
+ * LLM-chosen; the dispatch layer resolves the actual agent from that role.
  */
 const decomposedTaskSchema = z.object({
 	id: z.string().trim().min(1),
@@ -62,11 +57,7 @@ function parsePayload(output: string): readonly DispatchTask[] {
 	for (const candidate of jsonCandidates(output)) {
 		try {
 			const parsed = decompositionPayloadSchema.parse(JSON.parse(candidate));
-			const tasks = Array.isArray(parsed) ? parsed : parsed.tasks;
-			return tasks.map((task) => ({
-				...task,
-				agent: DEFAULT_DECOMPOSITION_AGENT,
-			}));
+			return Array.isArray(parsed) ? parsed : parsed.tasks;
 		} catch {}
 	}
 	throw new Error("Decomposer returned invalid task JSON.");
@@ -86,7 +77,6 @@ export function fallbackDecomposition(task: string): readonly DispatchTask[] {
 	return [
 		{
 			id: DEFAULT_DECOMPOSITION_TASK_ID,
-			agent: DEFAULT_DECOMPOSITION_AGENT,
 			role: DEFAULT_DECOMPOSITION_ROLE,
 			assignment: task,
 		},
