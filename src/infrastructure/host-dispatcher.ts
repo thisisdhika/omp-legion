@@ -30,6 +30,7 @@ import type {
 } from "../application/dispatch-service";
 import type { ExpertResult } from "../domain/dispatch";
 import { runAsDispatchedAgent } from "./agent-execution-context";
+import type { Rule } from "./rule-loader";
 
 export interface HostExecutorOptions {
 	readonly cwd: string;
@@ -66,6 +67,19 @@ export interface HostExecutorOptions {
 	 * experts did respond.
 	 */
 	readonly expertTimeoutMs?: number;
+	/**
+	 * Rules to forward to every expert attempt, resolved once at session_start
+	 * (see rule-loader.ts's loadSubagentRules). This is the user's own
+	 * naturally-discovered rules plus every bundled rule EXCEPT
+	 * `rules/legion-dispatch.md`, which is primary-agent-only content (when to
+	 * reach for `legion_dispatch` — a tool no dispatched expert can ever call).
+	 * Passing an explicit `rules` array to a subagent replaces its own
+	 * discovery entirely rather than adding to it, so omitting this option (or
+	 * passing the wrong subset) would silently drop the user's own project/
+	 * user rules for every dispatched attempt — loadSubagentRules already
+	 * accounts for that.
+	 */
+	readonly rules?: readonly Rule[];
 }
 
 /** Builds a synthetic failure SingleResult when isolation setup itself throws (not a git repo, no backend available, etc.) — before the subagent ever ran. */
@@ -176,16 +190,20 @@ export class HostExpertExecutor implements ExpertExecutor {
 			// Legion can read directly. Passing it makes executor.ts build instant
 			// MCP proxy tools from the already-connected servers instead.
 			mcpManager: MCPManager.instance(),
-			// rules is deliberately left unset: omitting it makes runSubprocess's
-			// own subagent path run its natural discovery (loadCapability against
-			// this attempt's own cwd), which already finds both the user's own
-			// project/user rules AND Legion's bundled rules/*.md automatically —
-			// confirmed live: omp-plugins.ts's extension-root sub-discovery scans
-			// every registered extension package's own rules/ directory the same
-			// way it scans agents/, no manual threading needed. Passing an
-			// explicit `rules` array here would REPLACE that discovery entirely
-			// rather than add to it, silently dropping the user's own rules for
-			// every dispatched expert — worse than doing nothing.
+			// rules is set explicitly to this.#options.rules (loadSubagentRules's
+			// result: natural discovery minus rules/legion-dispatch.md — see
+			// HostExecutorOptions.rules's doc comment). Leaving it unset would let
+			// runSubprocess's own subagent path run its own natural discovery
+			// (loadCapability against this attempt's own cwd), which finds every
+			// bundled rule including legion-dispatch.md — live-confirmed: a
+			// dispatched reviewer's own session_init system prompt carried that
+			// rule's content verbatim, even though no legion-* persona can ever
+			// call the tool it describes. Passing an explicit `rules` array here
+			// REPLACES a subagent's own discovery rather than adding to it, which
+			// is exactly why loadSubagentRules computes the full natural-discovery
+			// set itself before filtering — passing a hand-picked subset would
+			// silently drop the user's own project/user rules for every attempt.
+			rules: this.#options.rules ? [...this.#options.rules] : undefined,
 			// Deliberately constructed rather than omitted: without this, every
 			// spawn silently discarded whatever session-level settings existed
 			// (runSubprocess falls back to a blank Settings.isolated() when given

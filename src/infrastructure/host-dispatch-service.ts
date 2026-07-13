@@ -30,6 +30,7 @@ import { HostExpertExecutor, HostJobScheduler } from "./host-dispatcher";
 import { createHostOrchestrationRepository } from "./host-orchestration-repository";
 import { HostLlmAggregator } from "./llm-aggregator";
 import { HostLlmDecomposer } from "./llm-decomposer";
+import type { Rule } from "./rule-loader";
 import { HostVerifier } from "./verifier";
 
 function activeModel(ctx: ExtensionContext) {
@@ -46,6 +47,7 @@ export function createHostDispatchService(
 	config: LegionConfig,
 	agents: ReadonlyMap<string, AgentDefinition>,
 	eventBus?: ExecutorOptions["eventBus"],
+	subagentRules?: readonly Rule[],
 ): DispatchService {
 	const manager = AsyncJobManager.instance();
 	if (!manager) throw new Error("Legion requires the host async job manager.");
@@ -83,6 +85,7 @@ export function createHostDispatchService(
 			agents,
 			eventBus,
 			expertTimeoutMs: config.expertTimeoutMs,
+			rules: subagentRules,
 		}),
 		resolveAgent: (role) => resolveAgentName(role, agentNames),
 		synthesizer: new SynthesisService({

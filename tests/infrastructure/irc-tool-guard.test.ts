@@ -7,10 +7,7 @@ import {
 	runAsDispatchedAgent,
 	runWithDispatchContext,
 } from "../../src/infrastructure/agent-execution-context";
-import {
-	NO_DISPATCH_CONTEXT_REASON,
-	evaluateIrcCall,
-} from "../../src/infrastructure/irc-tool-guard";
+import { evaluateIrcCall } from "../../src/infrastructure/irc-tool-guard";
 
 const PARENT = LEGION_DISPATCH_PARENT_ROUTE;
 
@@ -100,10 +97,17 @@ describe("evaluateIrcCall — isolation policy", () => {
 		expect(decision.block).toBe(true);
 	});
 
-	test("blocks when no authenticated context is available (fail-closed)", () => {
+	// Regression test for a live-confirmed incident: a native `task`-tool
+	// subagent ("ScopedRedundancyAudit", not a legion-* agent at all) hit "IRC
+	// blocked: no dispatch context" and lost IRC access entirely. Only
+	// Legion's own HostExpertExecutor ever sets a dispatch context — a
+	// non-legion-* agent is never wrapped, so it always has undefined
+	// context. Undefined context must mean "not a legion-* expert," not
+	// "assume the worst and block" — mirrors git-commit-guard.ts's own
+	// `context?.senderKind !== "expert"` fail-open policy.
+	test("allows IRC when no dispatch context is available — not a legion-* expert", () => {
 		expect(evaluateIrcCall(undefined, { op: "send", to: "anyone" })).toEqual({
-			block: true,
-			reason: NO_DISPATCH_CONTEXT_REASON,
+			block: false,
 		});
 	});
 
