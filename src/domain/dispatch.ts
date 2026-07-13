@@ -67,9 +67,8 @@ export const dispatchTaskSchema = z.object({
 	assignment: z
 		.string()
 		.trim()
-		.min(1)
 		.describe(
-			"The complete, self-contained instruction this expert actually receives and acts on — not a short label. The expert never sees the request-level `task` field, the user's original message, or this conversation; if the real content (file contents, constraints, what to focus on) only lives in `task`, the expert never sees it. Put everything the expert needs to do the work here.",
+			"The complete, self-contained instruction this expert actually receives and acts on — not a short label. The expert receives task as secondary background context in their system prompt, but it is not the primary instruction; if the real content (file contents, constraints, what to focus on) only lives in task, the expert will not have it as their main directive. Put everything the expert needs to do the work here.",
 		),
 	description: z
 		.string()

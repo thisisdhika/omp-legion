@@ -30,3 +30,16 @@ Do not use it for:
 ## The one thing that matters most
 
 **Never call `legion_dispatch` from inside a task that was itself dispatched by `legion_dispatch`.** Experts are meant to give one independent, self-contained answer — recursive dispatch defeats the ensemble and can deadlock the job queue.
+
+## Meta-risk override: always dispatch for Legion-internal edits
+
+Regardless of diff size or apparent triviality, **always call `legion_dispatch` for a second opinion before finalizing any change to the following paths**. These files govern Legion's own invocation surface, schema contract, and expert-delivery behavior; a small edit can silently shift should-call decisions or introduce contradictory guidance.
+
+- `src/presentation/dispatch-tool.ts` (the `legion_dispatch` tool description)
+- `src/domain/dispatch.ts` (the request/task schemas and their `.describe()` strings)
+- `rules/legion-*.md` (always-applied and rulebook rules bundled with Legion)
+- `agents/legion-*.md` (persona files for Legion expert roles)
+- Dispatch and rule-delivery infrastructure: `src/infrastructure/rule-loader.ts`, `src/infrastructure/host-dispatch-service.ts`, `src/application/dispatch-service.ts`, `src/domain/decomposition.ts`, `src/domain/synthesis.ts`
+
+If you are unsure whether a change falls in this category, dispatch anyway — the cost of an unnecessary review is far lower than the cost of a silent contract regression.
+

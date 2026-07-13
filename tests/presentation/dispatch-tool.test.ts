@@ -39,6 +39,33 @@ describe("createDispatchTool description", () => {
 			/assignment.*is the actual instruction the expert receives/i,
 		);
 	});
+
+	// Semantic consistency test: the tool description and the schema descriptions
+	// must agree on the task/assignment contract. The task field is visible to
+	// experts as secondary/background context; assignment is the actual primary
+	// instruction. A contradiction between these was caught by a reviewer in
+	// commit 4b21caa and must not regress.
+	test("tool description agrees with schema: task is secondary background, assignment is primary", () => {
+		const tool = createDispatchTool(() => undefined);
+		// Tool description must not claim task is invisible
+		expect(tool.description).not.toMatch(/expert.*does not see.*task/i);
+		expect(tool.description).not.toMatch(/expert never sees.*task/i);
+		// Tool description must state task is secondary/background
+		expect(tool.description).toMatch(
+			/task.*secondary background|secondary.*background.*task/i,
+		);
+		// Tool description must state assignment is the actual/primary instruction
+		expect(tool.description).toMatch(
+			/assignment.*(actual|primary) instruction/i,
+		);
+	});
+
+	test("tool description agrees with schema: assignment is the real instruction", () => {
+		const tool = createDispatchTool(() => undefined);
+		expect(tool.description).toMatch(
+			/assignment.*is the (actual|real|primary) instruction/i,
+		);
+	});
 });
 
 describe("describePhase", () => {
