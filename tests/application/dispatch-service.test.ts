@@ -23,6 +23,7 @@ import type {
 	SynthesisResult,
 	SynthesisRunner,
 } from "../../src/domain/synthesis";
+import { InMemoryOrchestrationRepository } from "../../src/infrastructure/in-memory-orchestration-repository";
 
 class DeferredScheduler implements JobScheduler {
 	readonly jobs: Array<(context: JobRunContext) => Promise<string>> = [];
@@ -33,6 +34,27 @@ class DeferredScheduler implements JobScheduler {
 	): string {
 		this.jobs.push(run);
 		return "job-1";
+	}
+
+	getJob(_id: string): JobInfo | undefined {
+		return undefined;
+	}
+}
+
+class IdentityRecordingScheduler implements JobScheduler {
+	readonly jobs: Array<{
+		id: string;
+		run: (context: JobRunContext) => Promise<string>;
+	}> = [];
+
+	schedule(
+		_label: string,
+		run: (context: JobRunContext) => Promise<string>,
+		id?: string,
+	): string {
+		if (!id) throw new Error("Expected a dispatch identity.");
+		this.jobs.push({ id, run });
+		return id;
 	}
 
 	getJob(_id: string): JobInfo | undefined {
@@ -202,6 +224,58 @@ describe("DispatchService", () => {
 		expect(accepted.jobId).toBe("job-1");
 		expect(executor.executions).toHaveLength(0);
 		expect(scheduler.jobs).toHaveLength(1);
+	});
+
+	test("allows the same task payload to retry after a failed job", async () => {
+		const scheduler = new IdentityRecordingScheduler();
+		const repository = new InMemoryOrchestrationRepository();
+		let executions = 0;
+		const executor: ExpertExecutor = {
+			async run(execution) {
+				executions += 1;
+				return {
+					attemptId: execution.attempt.id,
+					taskId: execution.attempt.taskId,
+					agent: execution.attempt.agent,
+					role: execution.attempt.role,
+					model: execution.attempt.model,
+					index: execution.attempt.index,
+					output: executions === 1 ? "" : "retry succeeded",
+					stderr: executions === 1 ? "forced first failure" : "",
+					exitCode: executions === 1 ? 1 : 0,
+					durationMs: 1,
+					tokens: 1,
+					requests: 1,
+				};
+			},
+		};
+		const service = new DispatchService({
+			scheduler,
+			executor,
+			synthesizer: new RecordingSynthesizer(),
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+		});
+		const request = {
+			task: "Retry this exact dispatch after failure",
+			tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+		};
+
+		const first = service.dispatch(request);
+		const firstJob = scheduler.jobs[0];
+		if (!firstJob) throw new Error("Expected the first scheduled job.");
+		await firstJob.run({ ...context(), jobId: first.jobId });
+
+		const second = service.dispatch(request);
+		const secondJob = scheduler.jobs[1];
+		if (!secondJob) throw new Error("Expected the retry scheduled job.");
+		await secondJob.run({ ...context(), jobId: second.jobId });
+		expect(second.jobId).not.toBe(first.jobId);
+		expect(repository.get(first.jobId)?.state).toBe("completed");
+		expect(repository.get(first.jobId)?.results?.[0]?.exitCode).toBe(1);
+		expect(repository.get(second.jobId)?.state).toBe("completed");
 	});
 	test("decomposes a bare task inside the background job", async () => {
 		const scheduler = new DeferredScheduler();

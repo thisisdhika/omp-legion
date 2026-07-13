@@ -49,6 +49,13 @@ import {
 } from "../domain/governance";
 import type { SynthesisResult, SynthesisRunner } from "../domain/synthesis";
 
+let dispatchSequence = 0;
+
+function uniqueDispatchJobId(task: string): string {
+	dispatchSequence += 1;
+	return `${humanReadableJobId(task)}-${Date.now().toString(36)}-${dispatchSequence}`;
+}
+
 export interface ExpertExecution {
 	readonly attempt: DispatchAttempt;
 	readonly task: string;
@@ -504,7 +511,7 @@ export class DispatchService {
 		const jobId = this.#options.scheduler.schedule(
 			LEGION_DISPATCH_JOB_LABEL,
 			(context) => this.#run(context, request, parentToolCallId),
-			humanReadableJobId(request.task),
+			uniqueDispatchJobId(request.task),
 		);
 
 		return {
