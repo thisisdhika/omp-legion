@@ -72,14 +72,27 @@ export function useSpinnerLoop(
 ): SpinnerLoop {
 	let frame = initialFrame % frames.length;
 	let timer: ReturnType<typeof setInterval> | undefined;
+	const safeFrame = (onFrame: (frame: number) => void, value: number): void => {
+		try {
+			onFrame(value);
+		} catch (error) {
+			console.warn(
+				"Legion spinner frame callback failed; stopping spinner.",
+				error,
+			);
+			if (timer !== undefined) clearInterval(timer);
+			timer = undefined;
+		}
+	};
 	return {
 		frames,
 		start(onFrame) {
 			if (timer !== undefined) return;
-			onFrame(frame);
+			safeFrame(onFrame, frame);
+			if (timer !== undefined) return;
 			timer = setInterval(() => {
 				frame = (frame + 1) % frames.length;
-				onFrame(frame);
+				safeFrame(onFrame, frame);
 			}, intervalMs);
 		},
 		stop() {

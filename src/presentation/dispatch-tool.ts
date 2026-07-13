@@ -304,7 +304,11 @@ function monitorInBackground(
 			}
 			await sleep(200);
 		}
-	})();
+	})().catch((error) => {
+		console.warn("Legion progress monitor stopped unexpectedly.", error);
+		active = false;
+		spinner.stop();
+	});
 }
 
 /** One row's live state within the shared, multi-job widget. */
@@ -436,7 +440,13 @@ export function createDispatchTool(
 				}
 				await sleep(200);
 			}
-		})();
+		})().catch((error) => {
+			console.warn(
+				"Legion background progress monitor stopped unexpectedly.",
+				error,
+			);
+			close();
+		});
 	}
 	return {
 		name: "legion_dispatch",
