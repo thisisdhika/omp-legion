@@ -62,7 +62,7 @@ export const dispatchTaskSchema = z.object({
 		.trim()
 		.min(1)
 		.describe(
-			'Bare role name matching an available legion-<role> persona, e.g. "reviewer" or "coder" — not "Reviewer", not "legion-reviewer" (that becomes "legion-legion-reviewer" and is rejected). An unmatched role rejects the whole dispatch rather than substituting a different persona.',
+			'Bare available legion persona name, such as "reviewer" or "coder"; do not capitalize or prefix with "legion-". Invalid roles reject the dispatch.',
 		),
 	assignment: z
 		.string()
@@ -77,7 +77,7 @@ export const dispatchTaskSchema = z.object({
 		.min(1)
 		.optional()
 		.describe(
-			"A short one-line label for display only (HUD/logs) — never the expert's instruction. Keep it brief; it has no effect on what the expert actually does.",
+			"Short display label for HUD/logs only; it is display only, not the expert's instruction and does not affect execution.",
 		),
 });
 
