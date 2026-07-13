@@ -5,6 +5,7 @@ tools:
   - read
   - grep
   - glob
+  - search_tool_bm25
 thinkingLevel: high
 ---
 

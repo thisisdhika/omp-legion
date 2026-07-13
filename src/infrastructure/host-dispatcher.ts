@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import type { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import type { ExecutorOptions } from "@oh-my-pi/pi-coding-agent/task/executor";
 import {
 	runSubagentFollowUpTurn,
@@ -158,6 +159,23 @@ export class HostExpertExecutor implements ExpertExecutor {
 			eventBus: this.#options.eventBus,
 			signal: execution.signal,
 			maxRuntimeMs: this.#options.expertTimeoutMs,
+			// Reuse the primary interactive session's already-connected MCP
+			// servers instead of letting each attempt cold-start its own —
+			// executor.ts's subagent path sets `enableMCP = !options.mcpManager`,
+			// so omitting this makes EVERY expert attempt independently spawn a
+			// fresh MCP server process from zero (confirmed live via `ps aux`:
+			// multiple concurrent `codegraph serve --mcp` processes, one per
+			// attempt, none of them warm) — for a server that needs real time to
+			// index a codebase, search_tool_bm25 then reliably reports
+			// total_tools: 0 for the entire attempt, since the server never
+			// finishes starting up before the attempt ends. MCPManager.instance()
+			// is a process-global singleton (`mcp/manager.ts`, "shared by internal
+			// URL protocol handlers and tools") that the primary session's own
+			// createAgentSession call already populated via setInstance() at
+			// startup — not exposed on ExtensionContext, but a public SDK export
+			// Legion can read directly. Passing it makes executor.ts build instant
+			// MCP proxy tools from the already-connected servers instead.
+			mcpManager: MCPManager.instance(),
 			// Deliberately constructed rather than omitted: without this, every
 			// spawn silently discarded whatever session-level settings existed
 			// (runSubprocess falls back to a blank Settings.isolated() when given
