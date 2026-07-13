@@ -160,12 +160,62 @@ describe("SynthesisService", () => {
 			],
 		});
 
-		expect(result.answer).toContain("Ask about canonical URL structure.");
+		// The longer of the two near-identical candidates wins the fallback
+		// (see longestAnswer's doc comment in synthesis.ts) — both are valid,
+		// real answers here, so this just confirms *a* real answer survives.
+		expect(result.answer).toContain("Ask about canonical URL structure too.");
 		expect(result.answer).toContain("Model not found gpt-5.6-luna");
 		expect(result.synthesisUsed).toBe(false);
 		// Clustering itself is unaffected by the aggregator's failure — the real
 		// confidence/disagreement signal from the actual expert answers survives.
 		expect(result.confidence).toBe(1);
+	});
+
+	// Regression test for a second live-confirmed incident on top of the first:
+	// the degraded-fallback path above picked `candidates[0]` — whichever
+	// attempt happened to be first in *array* order — with no regard for
+	// whether that attempt actually finished. Live case: attempt index 0 never
+	// called `yield` (stuck retrying with empty completions until it ran out
+	// of turns); the host substituted its one leftover planning sentence as
+	// the "successful" raw result, which then won the fallback over two other
+	// attempts that had genuinely completed with real, full answers — because
+	// index 0 beats index 1/2 with no other tiebreaker. The fallback must
+	// prefer the longest (most likely actually-finished) surviving answer,
+	// not whichever one happened to run first.
+	test("prefers the longest surviving answer over attempt-array order when the aggregator fails", async () => {
+		class FailingAggregator implements Aggregator {
+			synthesize(): Promise<string> {
+				return Promise.reject(new Error("Model not found gpt-5.6-luna"));
+			}
+		}
+		const service = new SynthesisService({
+			embeddingProvider: new StaticEmbeddingProvider([
+				[1, 0],
+				[0, 1],
+				[0.5, 0.5],
+			]),
+			aggregator: new FailingAggregator(),
+		});
+		const result = await service.synthesize({
+			task: "Pick the sharpest next question",
+			taskId: "task-1",
+			experts: [
+				// attempt-0: stuck/truncated — a leftover planning sentence, no
+				// real answer, but still index 0 in the experts array.
+				expert("attempt-0", "I'll help you identify the next decision."),
+				expert(
+					"attempt-1",
+					"What is the readiness gate for CMS as the source of truth for supported regions? Options: strict allowlist, soft fallback, or manual override. Recommend strict allowlist for safety.",
+				),
+				expert(
+					"attempt-2",
+					"When CMS becomes authoritative, what is the runtime behavior on a failed or empty fetch? Options: fail closed, fail open, or cached fallback. Recommend fail closed.",
+				),
+			],
+		});
+
+		expect(result.answer).not.toContain("I'll help you identify");
+		expect(result.answer).toContain("readiness gate");
 	});
 });
 

@@ -7,8 +7,9 @@ This document explains *how the shipped code implements those decisions* —
 every claim here is checked against the source at the paths cited, not
 aspirational.
 
-For the plain-language usage contract the primary agent reads at runtime, see
-[`rules/legion-dispatch.md`](../rules/legion-dispatch.md).
+The primary agent's plain-language usage contract lives in the
+`legion_dispatch` tool description in
+[`src/presentation/dispatch-tool.ts`](../src/presentation/dispatch-tool.ts).
 
 ---
 
@@ -69,7 +70,7 @@ agents/               legion-coder.md, legion-reviewer.md (read-only), legion-te
                       legion-decomposer.md (internal planning-only — never itself dispatchable,
                       excluded from both legion_dispatch's role resolution and the native task tool)
 skills/centurion/SKILL.md  ensemble-driven clarifying-question loop, invoked via /skill:centurion
-rules/legion-dispatch.md   auto-discovered usage rule for the primary agent
+rules/legion-search-tool-bm25.md  shared MCP tool-discovery guidance for expert personas
 ```
 
 **Dependency rule (ADR 0001):** Presentation → Application → Domain ←
@@ -137,9 +138,8 @@ caller did exactly this (pasted a full file into `task`, left `assignment`
 as a one-line label), reasoning `task` was the primary content and
 `assignment` a display label — backwards. `dispatchTaskSchema.assignment`/
 `.description` and `dispatchRequestSchema.task` now carry explicit
-`.describe()` text stating the real relationship, the tool's own top-level
-description states it under an "IMPORTANT" clause, and
-`rules/legion-dispatch.md` repeats it in the always-loaded usage rule.
+`.describe()` text stating the real relationship, and the tool's own top-level
+description states it under an "IMPORTANT" clause.
 
 ### 3.3 Immediate planning (`DispatchService.dispatch`, `src/application/dispatch-service.ts`)
 
@@ -721,19 +721,17 @@ every branched attempt gets independently re-verified before synthesis) but
   unrelated to this approval.
 - **`description` carries the "when," not just the "what."** A tool's
   description is in the model's active tool list on every turn it considers
-  what to do — far higher salience than `rules/legion-dispatch.md`, which is
-  a static block injected once at session start and competes with everything
-  else in a growing context window. Per Anthropic's own tool-use guidance
-  ("be prescriptive about when to call it, not just what it does... trigger
-  conditions in the description give measurable lift in should-call rate"),
-  the description explicitly states when to reach for it (judgment calls,
-  security-sensitive changes, subtle correctness bugs, architecture
-  decisions — *even when the user's own request never mentions review or
-  this tool by name*), when not to (routine low-stakes work — ensembling has
-  real latency/token cost), its async/non-blocking behavior, and the
-  no-recursive-dispatch constraint. The rule file remains the deeper
-  explanation for when the model does look at it; the description is what
-  makes it look in the first place.
+  what to do — higher salience than static injected guidance competing with
+  everything else in a growing context window. Per Anthropic's own tool-use
+  guidance ("be prescriptive about when to call it, not just what it does...
+  trigger conditions in the description give measurable lift in should-call
+  rate"), the description explicitly states when to reach for it (judgment
+  calls, security-sensitive changes, subtle correctness bugs, architecture
+  decisions — *even when the user's own request never mentions review or this
+  tool by name*), when not to (routine low-stakes work — ensembling has real
+  latency/token cost), its async/non-blocking behavior, and the no-recursive-
+  dispatch constraint. The description is the canonical primary-agent usage
+  contract; expert-only rules remain separate.
 
 ### 6.2 The framed card (`dispatch-card.ts`)
 

@@ -356,6 +356,22 @@ export class SynthesisService implements SynthesisRunner {
 		const candidates = answerCandidates(input.experts);
 		const firstAnswer = candidates[0];
 		if (!firstAnswer) throw new Error(`Task ${input.taskId} has no answer.`);
+		// Live-confirmed failure mode of the degraded-fallback path below:
+		// firstAnswer is whichever attempt happens to be first in *array* order
+		// (attempt index 0), which carries no quality signal at all. An expert
+		// that never called `yield` (stuck retrying, ran out of turns) still
+		// produces a "successful" ExpertResult — the host substitutes its last
+		// assistant message as the raw result — so a genuinely broken attempt
+		// (a leftover one-sentence planning remark, no real answer) can easily
+		// land at index 0 ahead of two other attempts that finished properly.
+		// The longest candidate is a cheap, generically useful proxy for "an
+		// attempt that actually finished" — a stuck/truncated attempt's leftover
+		// text is reliably much shorter than a real finished answer.
+		const longestAnswer = candidates.reduce(
+			(best, candidate) =>
+				candidate.text.length > best.text.length ? candidate : best,
+			firstAnswer,
+		);
 
 		const shouldAggregate = candidates.length > 1 || Boolean(input.humanNote);
 		// Real expert answers already exist at this point (clustering succeeded);
@@ -366,7 +382,7 @@ export class SynthesisService implements SynthesisRunner {
 		// discard 5 genuinely completed expert results and report "every
 		// expert attempt failed" (see dispatch-service.ts's fallbackSynthesis,
 		// which is for the real zero-survivors case, not this one). Fall back
-		// to the top cluster's own raw answer instead.
+		// to the longest surviving raw answer instead (see longestAnswer above).
 		let answer = firstAnswer.text;
 		let synthesisUsed = false;
 		if (shouldAggregate) {
@@ -385,7 +401,7 @@ export class SynthesisService implements SynthesisRunner {
 				synthesisUsed = true;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				answer = `${firstAnswer.text}\n\n(Note: automatic synthesis of ${candidates.length} expert answers failed — ${message}. Showing the top expert's raw answer instead.)`;
+				answer = `${longestAnswer.text}\n\n(Note: automatic synthesis of ${candidates.length} expert answers failed — ${message}. Showing the most complete expert's raw answer instead.)`;
 			}
 		}
 		return {
