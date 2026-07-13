@@ -122,6 +122,7 @@ export interface JobScheduler {
 		onProgress?: (text: string, details?: Record<string, unknown>) => void,
 	): string;
 	getJob(id: string): JobInfo | undefined;
+	cancel?(id: string): boolean;
 }
 
 /** A task's winning attempt (per SynthesisResult.clusters[0].representativeAttemptId) that actually produced a branch. */
@@ -516,6 +517,9 @@ export class DispatchService {
 	/** Expose job status so the tool can poll for completion and stream live progress. */
 	getJob(id: string): ReturnType<JobScheduler["getJob"]> {
 		return this.#options.scheduler.getJob(id);
+	}
+	cancel(id: string): boolean {
+		return this.#options.scheduler.cancel?.(id) ?? false;
 	}
 
 	#buildPlan(request: DispatchRequest, idPrefix: string) {

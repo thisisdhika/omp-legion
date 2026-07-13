@@ -397,4 +397,7 @@ export class HostJobScheduler implements JobScheduler {
 			promise: job.promise,
 		};
 	}
+	cancel(id: string): boolean {
+		return this.#manager.cancel(id);
+	}
 }

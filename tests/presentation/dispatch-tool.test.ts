@@ -180,6 +180,13 @@ describe("createDispatchTool", () => {
 					],
 				};
 			},
+			getJob() {
+				return {
+					status: "completed" as const,
+					resultText: "Synthesized result",
+					promise: Promise.resolve(),
+				};
+			},
 		} as unknown as DispatchService;
 		const tool = createDispatchTool(() => service);
 
@@ -204,10 +211,10 @@ describe("createDispatchTool", () => {
 
 		expect(calls).toEqual(["call-1"]);
 		expect(result.details?.jobId).toBe("job-1");
-		expect(result.details?.state).toBe("running");
+		expect(result.details?.state).toBe("completed");
 		expect(result.content?.[0]).toEqual({
 			type: "text",
-			text: "Legion job job-1 accepted and running in the background.",
+			text: "Synthesized result",
 		});
 	});
 
@@ -231,7 +238,11 @@ describe("createDispatchTool", () => {
 			getJob() {
 				// Completed immediately so monitorWidget's background loop exits
 				// on its first check without ever needing a real sleep/timer.
-				return { status: "completed" as const, lastProgressDetails: undefined };
+				return {
+					status: "completed" as const,
+					lastProgressDetails: undefined,
+					promise: Promise.resolve(),
+				};
 			},
 		} as unknown as DispatchService;
 		const tool = createDispatchTool(() => service);
@@ -303,8 +314,9 @@ describe("createDispatchTool", () => {
 			},
 			getJob(jobId: string) {
 				return {
-					status: jobs.get(jobId)?.status,
+					status: jobs.get(jobId)?.status ?? "running",
 					lastProgressDetails: undefined,
+					promise: Promise.resolve(),
 				};
 			},
 		} as unknown as DispatchService;
@@ -393,6 +405,8 @@ describe("createDispatchTool", () => {
 					// scheduler lagging behind the job's own last progress report.
 					status: "running" as const,
 					lastProgressDetails: { phase: "completed" },
+					promise: Promise.resolve(),
+					resultText: "done",
 				};
 			},
 		} as unknown as DispatchService;

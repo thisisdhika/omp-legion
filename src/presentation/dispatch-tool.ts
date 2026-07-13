@@ -249,7 +249,21 @@ function monitorInBackground(
 	void (async () => {
 		while (active) {
 			const job = service.getJob(accepted.jobId);
-			if (job?.status === "completed" || job?.status === "failed") {
+			const details = describePhase(job?.lastProgressDetails);
+			if (
+				job?.status === "completed" ||
+				job?.status === "failed" ||
+				job?.status === "cancelled" ||
+				TERMINAL_PHASE_LABELS.has(details.label)
+			) {
+				onUpdate(
+					progressPartial({
+						phase: `${details.label} — ${details.detail}`,
+						frame: 0,
+						jobId: accepted.jobId,
+						attemptCount: accepted.attemptCount,
+					}),
+				);
 				active = false;
 				spinner.stop();
 				return;
@@ -378,7 +392,11 @@ export function createDispatchTool(
 		void (async () => {
 			while (!closed) {
 				const job = service.getJob(accepted.jobId);
-				if (job?.status === "completed" || job?.status === "failed") {
+				if (
+					job?.status === "completed" ||
+					job?.status === "failed" ||
+					job?.status === "cancelled"
+				) {
 					close();
 					return;
 				}
@@ -390,7 +408,7 @@ export function createDispatchTool(
 		name: "legion_dispatch",
 		label: "Legion",
 		description:
-			"Run one task through several independent expert attempts in parallel, then return a synthesized, cross-checked answer. Call for judgment calls, security-sensitive changes, subtle correctness bugs, architecture decisions, or any case where a second opinion is worth the latency and cost; do not use for routine low-stakes work that can be handled directly. The call returns a job ID immediately while ensemble work and any human governance continue asynchronously. Never call Legion from inside a task it dispatched. Omit `tasks` for automatic decomposition, or provide explicit tasks when the split is known. For explicit tasks, each `role` must be a bare role name matching an available legion persona (for example, `reviewer` or `coder`); capitalized names and prefixed names such as `legion-reviewer` are rejected. Each task's `assignment` is the actual instruction the expert receives and acts on; the expert sees the request-level `task` as secondary background context only, not the primary instruction. Put all per-task content in `assignment`, not only in `task`. Always call Legion for a second opinion before finalizing changes to this tool, its request schema, Legion rules/personas, or dispatch/rule-delivery code, regardless of diff size.",
+			"Run one task through several independent expert attempts in parallel, then wait for and return a synthesized, cross-checked answer. Call for judgment calls, security-sensitive changes, subtle correctness bugs, architecture decisions, or any case where a second opinion is worth the latency and cost; do not use for routine low-stakes work that can be handled directly. The call blocks until decomposition, expert execution, synthesis, and any human governance resolve. Never call Legion from inside a task it dispatched. Omit `tasks` for automatic decomposition, or provide explicit tasks when the split is known. For explicit tasks, each `role` must be a bare role name matching an available legion persona (for example, `reviewer` or `coder`); capitalized names and prefixed names such as `legion-reviewer` are rejected. Each task's `assignment` is the actual instruction the expert receives and acts on; the request-level `task` is secondary background context for every expert.",
 		parameters: dispatchRequestSchema,
 		approval: "exec",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -421,9 +439,48 @@ export function createDispatchTool(
 
 			monitorWidget(accepted, service, ctx);
 			monitorInBackground(accepted, service, onUpdate);
+			const job = service.getJob(accepted.jobId);
+			if (!job) {
+				return finalResult(
+					buildDetails(accepted, "failed"),
+					`Legion dispatch job ${accepted.jobId} could not be found.`,
+					true,
+				);
+			}
+			try {
+				if (signal) {
+					let abortListener: (() => void) | undefined;
+					const aborted = new Promise<never>((_, reject) => {
+						abortListener = () => {
+							service.cancel(accepted.jobId);
+							reject(new Error("Legion dispatch aborted."));
+						};
+						signal.addEventListener("abort", abortListener, { once: true });
+					});
+					try {
+						await Promise.race([job.promise, aborted]);
+					} finally {
+						if (abortListener)
+							signal.removeEventListener("abort", abortListener);
+					}
+				} else {
+					await job.promise;
+				}
+			} catch (error) {
+				if (signal?.aborted)
+					return finalResult(emptyDetails(), undefined, true);
+				const message = error instanceof Error ? error.message : String(error);
+				return finalResult(
+					buildDetails(accepted, "failed"),
+					`Legion dispatch failed: ${message}`,
+					true,
+				);
+			}
+			const completed = service.getJob(accepted.jobId);
+			const resultText = completed?.resultText;
 			return finalResult(
-				buildDetails(accepted, "running"),
-				`Legion job ${accepted.jobId} accepted and running in the background.`,
+				buildDetails(accepted, "completed", resultText),
+				resultText,
 			);
 		},
 		renderCall: () => EMPTY_COMPONENT,
