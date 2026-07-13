@@ -300,10 +300,7 @@ function availableModels(
 	if (models.length === 0) {
 		if (!policy) {
 			throw new Error(
-				`No modelMap policy configured for role "${role}" and its fallback ` +
-					`(the active session model${defaultModel ? ` "${defaultModel}"` : ""}) ` +
-					`is unavailable. Add a modelMap.${role} entry to config.yml, or ` +
-					"restart the session if you just added one (config loads once at session start).",
+				`No modelMap policy configured for role "${role}" and its fallback (the active session model${defaultModel ? ` "${defaultModel}"` : ""}) is unavailable. Add a modelMap.${role} entry to config.yml, or restart the session if you just added one (config loads once at session start).`,
 			);
 		}
 		throw new Error(

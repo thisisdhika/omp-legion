@@ -3,8 +3,8 @@ import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 
 import type { AggregatorInput } from "../../src/domain/synthesis";
-import { HostLlmAggregator } from "../../src/infrastructure/llm-aggregator";
 import { AGGREGATOR_SYSTEM_PROMPT } from "../../src/infrastructure/aggregator-prompts";
+import { HostLlmAggregator } from "../../src/infrastructure/llm-aggregator";
 
 function fakeModel(id: string): Model<Api> {
 	return { provider: "test", id } as unknown as Model<Api>;
