@@ -91,6 +91,40 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForDispatch(
+	job: { promise: Promise<unknown> },
+	service: DispatchService,
+	jobId: string,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const timeoutMs = service.getDispatchTimeoutMs?.() ?? 60 * 60_000;
+	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+	let abortListener: (() => void) | undefined;
+	const timedOut = new Promise<never>((_, reject) => {
+		timeoutHandle = setTimeout(() => {
+			service.cancel(jobId);
+			reject(new Error(`Legion dispatch timed out after ${timeoutMs}ms.`));
+		}, timeoutMs);
+	});
+	const aborted = signal
+		? new Promise<never>((_, reject) => {
+				abortListener = () => {
+					service.cancel(jobId);
+					reject(new Error("Legion dispatch aborted."));
+				};
+				signal.addEventListener("abort", abortListener, { once: true });
+			})
+		: undefined;
+	try {
+		const waits: Promise<unknown>[] = [job.promise, timedOut];
+		if (aborted) waits.push(aborted);
+		await Promise.race(waits);
+	} finally {
+		clearTimeout(timeoutHandle);
+		if (abortListener) signal?.removeEventListener("abort", abortListener);
+	}
+}
+
 /**
  * Labels the widget should never linger on: once reached, the job is done
  * and the widget should clear immediately. Checked directly against
@@ -448,28 +482,14 @@ export function createDispatchTool(
 				);
 			}
 			try {
-				if (signal) {
-					let abortListener: (() => void) | undefined;
-					const aborted = new Promise<never>((_, reject) => {
-						abortListener = () => {
-							service.cancel(accepted.jobId);
-							reject(new Error("Legion dispatch aborted."));
-						};
-						signal.addEventListener("abort", abortListener, { once: true });
-					});
-					try {
-						await Promise.race([job.promise, aborted]);
-					} finally {
-						if (abortListener)
-							signal.removeEventListener("abort", abortListener);
-					}
-				} else {
-					await job.promise;
-				}
+				await waitForDispatch(job, service, accepted.jobId, signal);
 			} catch (error) {
 				if (signal?.aborted)
 					return finalResult(emptyDetails(), undefined, true);
 				const message = error instanceof Error ? error.message : String(error);
+				if (message.startsWith("Legion dispatch timed out after ")) {
+					return finalResult(buildDetails(accepted, "failed"), message, true);
+				}
 				return finalResult(
 					buildDetails(accepted, "failed"),
 					`Legion dispatch failed: ${message}`,

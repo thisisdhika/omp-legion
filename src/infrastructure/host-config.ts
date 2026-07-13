@@ -95,6 +95,7 @@ function pluginSettingsLayer(
 		],
 		["verifyCommand", settings[LEGION_SETTING_KEYS.verifyCommand]],
 		["decisionTimeoutMs", settings[LEGION_SETTING_KEYS.decisionTimeoutMs]],
+		["dispatchTimeoutMs", settings[LEGION_SETTING_KEYS.dispatchTimeoutMs]],
 	] as const) {
 		if (value !== undefined) layer[key] = value;
 	}

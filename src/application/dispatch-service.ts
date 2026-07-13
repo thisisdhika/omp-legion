@@ -3,6 +3,7 @@ import type { LegionConfig } from "../domain/config";
 import {
 	DEFAULT_DECISION_TIMEOUT_MS,
 	DEFAULT_DISPATCH_STRATEGY,
+	DEFAULT_DISPATCH_TIMEOUT_MS,
 	DEFAULT_ENSEMBLE_SIZE,
 	DEFAULT_HOTL_THRESHOLDS,
 	DEFAULT_MAX_CONCURRENT_EXPERTS,
@@ -517,6 +518,12 @@ export class DispatchService {
 	/** Expose job status so the tool can poll for completion and stream live progress. */
 	getJob(id: string): ReturnType<JobScheduler["getJob"]> {
 		return this.#options.scheduler.getJob(id);
+	}
+	/** Hard cap used by the blocking presentation tool wait. */
+	getDispatchTimeoutMs(): number {
+		return (
+			this.#options.config?.dispatchTimeoutMs ?? DEFAULT_DISPATCH_TIMEOUT_MS
+		);
 	}
 	cancel(id: string): boolean {
 		return this.#options.scheduler.cancel?.(id) ?? false;

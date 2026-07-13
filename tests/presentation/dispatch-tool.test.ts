@@ -218,6 +218,47 @@ describe("createDispatchTool", () => {
 		});
 	});
 
+	test("cancels and returns a clear error when the outer wait times out", async () => {
+		let cancelled = false;
+		const service = {
+			dispatch: () => ({
+				jobId: "job-timeout",
+				recordId: "job-timeout",
+				attemptCount: 1,
+				attemptModels: ["provider/model"],
+				taskBreakdown: [],
+			}),
+			getDispatchTimeoutMs: () => 10,
+			cancel: () => {
+				cancelled = true;
+				return true;
+			},
+			getJob: () => ({
+				status: "running" as const,
+				promise: new Promise<void>(() => {}),
+			}),
+		} as unknown as DispatchService;
+		const result = await createDispatchTool(() => service).execute(
+			"call-timeout",
+			{
+				task: "Review the change",
+				tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+				modelMap: {},
+				defaultEnsembleSize: 3,
+			},
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+
+		expect(cancelled).toBe(true);
+		expect(result.isError).toBe(true);
+		expect(result.content?.[0]).toEqual({
+			type: "text",
+			text: "Legion dispatch timed out after 10ms.",
+		});
+	});
+
 	// Regression test for a live-confirmed bug: two or more concurrent
 	// dispatches (a genuinely multi-part user request fanning out into
 	// several legion_dispatch calls) rendered visually identical widgets --

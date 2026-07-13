@@ -59,6 +59,7 @@ export const LEGION_SETTING_KEYS = {
 	maxConcurrentExperts: "maxConcurrentExperts",
 	verifyCommand: "verifyCommand",
 	decisionTimeoutMs: "decisionTimeoutMs",
+	dispatchTimeoutMs: "dispatchTimeoutMs",
 	confidenceFloor: "hotl.confidenceFloor",
 	disagreementThreshold: "hotl.disagreementThreshold",
 	costCeiling: "hotl.costCeiling",
@@ -159,3 +160,5 @@ export const DEFAULT_DECISION_TIMEOUT_MS = 30 * 60_000;
  * did not).
  */
 export const DEFAULT_EXPERT_TIMEOUT_MS = 5 * 60_000;
+/** 60 minutes — an outer cap for the whole blocking dispatch wait. */
+export const DEFAULT_DISPATCH_TIMEOUT_MS = 60 * 60_000;
