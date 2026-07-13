@@ -237,3 +237,148 @@ describe("HostLlmAggregator", () => {
 		expect(receivedSystemPrompt).toEqual(AGGREGATOR_SYSTEM_PROMPT);
 	});
 });
+
+// Error classification regression tests
+describe("HostLlmAggregator error classification", () => {
+	test("stops immediately on 401 error from primary, no fallback attempted", async () => {
+		const error = new Error("401 Unauthorized");
+		let fallbackAttempted = false;
+
+		const registry = {} as ModelRegistry;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/tmp",
+			fallbackModels: ["fallback-1", "fallback-2"],
+			complete: async (opts) => {
+				if (opts.model.id === "primary") throw error;
+				fallbackAttempted = true;
+				throw new Error("should not be called");
+			},
+		});
+
+		const result = await aggregator.synthesize(input()).catch((e) => e);
+		expect(fallbackAttempted).toBe(false);
+		expect(result).toBe(error);
+	});
+
+	test("stops immediately on 403 error from primary, no fallback attempted", async () => {
+		const error = new Error("403 Forbidden");
+		let fallbackAttempted = false;
+
+		const registry = {} as ModelRegistry;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/tmp",
+			fallbackModels: ["fallback-1", "fallback-2"],
+			complete: async (opts) => {
+				if (opts.model.id === "primary") throw error;
+				fallbackAttempted = true;
+				throw new Error("should not be called");
+			},
+		});
+
+		const result = await aggregator.synthesize(input()).catch((e) => e);
+		expect(fallbackAttempted).toBe(false);
+		expect(result).toBe(error);
+	});
+
+	test("stops immediately on context-length-exceeded error from primary, no fallback attempted", async () => {
+		const error = new Error("context length exceeded");
+		let fallbackAttempted = false;
+
+		const registry = {} as ModelRegistry;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/tmp",
+			fallbackModels: ["fallback-1", "fallback-2"],
+			complete: async (opts) => {
+				if (opts.model.id === "primary") throw error;
+				fallbackAttempted = true;
+				throw new Error("should not be called");
+			},
+		});
+
+		const result = await aggregator.synthesize(input()).catch((e) => e);
+		expect(fallbackAttempted).toBe(false);
+		expect(result).toBe(error);
+	});
+
+	test("stops immediately on maximum-context error from primary, no fallback attempted", async () => {
+		const error = new Error("maximum context length exceeded");
+		let fallbackAttempted = false;
+
+		const registry = {} as ModelRegistry;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/tmp",
+			fallbackModels: ["fallback-1", "fallback-2"],
+			complete: async (opts) => {
+				if (opts.model.id === "primary") throw error;
+				fallbackAttempted = true;
+				throw new Error("should not be called");
+			},
+		});
+
+		const result = await aggregator.synthesize(input()).catch((e) => e);
+		expect(fallbackAttempted).toBe(false);
+		expect(result).toBe(error);
+	});
+
+	test("tries fallbacks on transient network error", async () => {
+		const primaryError = new Error("ECONNREFUSED");
+		const fallbackError = new Error("fallback failed");
+		let fallbackAttempted = false;
+
+		const registry = {} as ModelRegistry;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/tmp",
+			fallbackModels: ["fallback-1"],
+			resolveModel: () => fakeModel("fallback-1"),
+			complete: async (opts) => {
+				if (opts.model.id === "primary") throw primaryError;
+				fallbackAttempted = true;
+				throw fallbackError;
+			},
+		});
+
+		const result = await aggregator.synthesize(input()).catch((e) => e);
+		expect(fallbackAttempted).toBe(true);
+		expect(result).toBe(fallbackError);
+	});
+
+	test("stops on fatal error from fallback and does not try remaining fallbacks", async () => {
+		const primaryError = new Error("transient error");
+		const fatalFallbackError = new Error("403 Forbidden");
+		let fallback1Attempted = false;
+		let fallback2Attempted = false;
+
+		const registry = {} as ModelRegistry;
+		const aggregator = new HostLlmAggregator({
+			model: fakeModel("primary"),
+			modelRegistry: registry,
+			cwd: "/tmp",
+			fallbackModels: ["fallback-1", "fallback-2"],
+			resolveModel: (selector) => fakeModel(selector),
+			complete: async (opts) => {
+				if (opts.model.id === "primary") throw primaryError;
+				if (opts.model.id === "fallback-1") {
+					fallback1Attempted = true;
+					throw fatalFallbackError;
+				}
+				fallback2Attempted = true;
+				throw new Error("should not be called");
+			},
+		});
+
+		const result = await aggregator.synthesize(input()).catch((e) => e);
+		expect(fallback1Attempted).toBe(true);
+		expect(fallback2Attempted).toBe(false);
+		expect(result).toBe(fatalFallbackError);
+	});
+});

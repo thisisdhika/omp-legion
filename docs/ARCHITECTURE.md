@@ -940,6 +940,22 @@ The decomposer is intentionally independent from expert role policies:
 - When no decomposer policy exists, the active session model remains the
   compatibility fallback.
 
+### Primary interactive-session fallback boundary
+
+Legion's model fallback protects only its internal work: decomposer attempts,
+aggregator synthesis, and dispatched expert attempts. It does **not** wrap the
+primary interactive OMP session that invokes `legion_dispatch`. That session's
+model is resolved by the host from `modelRoles.default`; if the provider fails,
+the host currently offers no automatic Legion-configured fallback chain. Recovery
+requires the provider's own fallback mechanism (where supported) or manually
+switching models with `/model`.
+
+This boundary is intentional: Legion is an extension running below the host's
+primary agent loop and has no hook into that loop's model-call retry path.
+`modelMap` and `decomposer.models` therefore must not be documented or treated
+as protection for the primary session. A host-level primary-model fallback
+feature would be required to close this gap.
+
 **Config keys** (see `config.example.json` for a worked example):
 
 | Key | Shape | Meaning |

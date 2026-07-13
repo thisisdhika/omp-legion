@@ -11,6 +11,18 @@ import {
 	defaultResolveModel,
 } from "./host-llm";
 
+const FATAL_PATTERNS = [
+	/\b401\b/,
+	/\b403\b/,
+	/context[_ ]?length/i,
+	/maximum context/i,
+];
+
+function isRetryableAggregatorError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return !FATAL_PATTERNS.some((pattern) => pattern.test(message));
+}
+
 export interface HostLlmAggregatorOptions extends HostLlmOptions {
 	/**
 	 * Ordered model selectors to retry, one at a time, if the primary `model`
@@ -57,6 +69,10 @@ export class HostLlmAggregator implements Aggregator {
 		try {
 			return await this.#complete(this.#options, systemPrompt, prompt, signal);
 		} catch (primaryError) {
+			// Fatal errors (401/403/context-length) — do not burn fallback attempts.
+			if (!isRetryableAggregatorError(primaryError)) {
+				throw primaryError;
+			}
 			let lastError = primaryError;
 			for (const selector of this.#options.fallbackModels ?? []) {
 				const model = this.#resolveModel(selector);
@@ -70,6 +86,10 @@ export class HostLlmAggregator implements Aggregator {
 					);
 				} catch (error) {
 					lastError = error;
+					if (!isRetryableAggregatorError(error)) {
+						// Fatal error on fallback — stop immediately, don't try remaining.
+						throw error;
+					}
 				}
 			}
 			throw lastError;
