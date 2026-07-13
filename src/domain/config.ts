@@ -28,6 +28,7 @@ const roleModelInputSchema = z.object({
 		.max(MAX_ENSEMBLE_SIZE)
 		.optional(),
 	temperatureLadder: z.array(z.number().min(0).max(2)).min(1).optional(),
+	worktree: z.boolean().optional(),
 });
 /**
  * The decomposer always runs exactly one model at a time — it is an
@@ -179,6 +180,11 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 				// temperatureLadder never reached the attempts that needed it,
 				// silently falling back to DEFAULT_TEMPERATURE_LADDER instead.
 				temperatureLadder: policy.temperatureLadder,
+				// Same class of bug as temperatureLadder above, live-confirmed the
+				// same way: worktree: false in config.yml was silently stripped by
+				// roleModelInputSchema not declaring the field, so every attempt
+				// kept running isolated regardless of the role's configured opt-out.
+				worktree: policy.worktree,
 			},
 		]),
 	);

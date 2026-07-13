@@ -127,6 +127,46 @@ describe("SynthesisService", () => {
 		expect(result.disagreement).toBe(1);
 		expect(result.synthesisUsed).toBe(true);
 	});
+
+	// Regression test for a live-confirmed incident: clustering succeeded with
+	// real expert answers (5 completed attempts), but the aggregator's own
+	// write-up call failed ("Model not found gpt-5.6-luna" — an unrelated
+	// model captured at session_start, not any expert's assigned model). The
+	// caller previously let this exception propagate, and dispatch-service.ts's
+	// generic catch mislabeled it "every expert attempt failed; nothing to
+	// synthesize" — discarding genuinely completed expert work over a failure
+	// in an entirely different step. Synthesis must degrade to the top
+	// cluster's raw answer instead of losing real results to an unrelated
+	// aggregator failure.
+	test("falls back to the top cluster's raw answer when the aggregator itself fails, instead of discarding real expert results", async () => {
+		class FailingAggregator implements Aggregator {
+			synthesize(): Promise<string> {
+				return Promise.reject(new Error("Model not found gpt-5.6-luna"));
+			}
+		}
+		const service = new SynthesisService({
+			embeddingProvider: new StaticEmbeddingProvider([
+				[1, 0],
+				[0.99, 0.01],
+			]),
+			aggregator: new FailingAggregator(),
+		});
+		const result = await service.synthesize({
+			task: "Pick the sharpest next question",
+			taskId: "task-1",
+			experts: [
+				expert("attempt-0", "Ask about canonical URL structure."),
+				expert("attempt-1", "Ask about canonical URL structure too."),
+			],
+		});
+
+		expect(result.answer).toContain("Ask about canonical URL structure.");
+		expect(result.answer).toContain("Model not found gpt-5.6-luna");
+		expect(result.synthesisUsed).toBe(false);
+		// Clustering itself is unaffected by the aggregator's failure — the real
+		// confidence/disagreement signal from the actual expert answers survives.
+		expect(result.confidence).toBe(1);
+	});
 });
 
 describe("preferVerifiedCluster", () => {

@@ -80,7 +80,6 @@ export function createHostDispatchService(
 			artifactsDir: ctx.sessionManager.getArtifactsDir() ?? undefined,
 			parentArtifactManager:
 				ctx.sessionManager.getArtifactManager() ?? undefined,
-			parentActiveModelPattern: activeModelSelector(ctx),
 			agents,
 			eventBus,
 			expertTimeoutMs: config.expertTimeoutMs,

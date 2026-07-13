@@ -34,6 +34,18 @@ export const roleModelPolicySchema = z.object({
 	 * there, so temperature stays at provider default unless asked for.
 	 */
 	temperatureLadder: z.array(z.number().min(0).max(2)).min(1).optional(),
+	/**
+	 * Whether attempts for this role run in an isolated git worktree.
+	 * Undefined means true (today's default, unchanged behavior). Isolation
+	 * exists to let parallel file-editing attempts land independent diffs
+	 * without colliding — a read-only role (never calls `edit`/`write`) has
+	 * no such collision to guard against, and paying worktree setup/teardown
+	 * cost for it is pure overhead. Set false only for roles that never
+	 * write files; the executor does not itself verify read-only-ness, so a
+	 * write-capable role set to false can silently write into the primary
+	 * working tree instead of an isolated one.
+	 */
+	worktree: z.boolean().optional(),
 });
 
 export const dispatchTaskSchema = z.object({
@@ -159,6 +171,8 @@ export interface DispatchAttempt {
 	readonly strategy?: DispatchStrategy;
 	/** This role's configured temperature ladder (undefined for diverse unless explicitly set); used by self-consistency expansion. */
 	readonly temperatureLadder?: readonly number[];
+	/** This role's `worktree` policy (see roleModelPolicySchema). Undefined means true — isolated by default. */
+	readonly worktree?: boolean;
 }
 
 export interface DispatchPlan {
@@ -272,6 +286,7 @@ export type AttemptIdFactory = (
 export type AgentResolver = (role: string) => string | undefined;
 
 function availableModels(
+	role: string,
 	policy: RoleModelPolicy | undefined,
 	defaultModel: string | undefined,
 	isAvailable: ModelAvailability,
@@ -284,8 +299,17 @@ function availableModels(
 	const candidates = policy?.models ?? (defaultModel ? [defaultModel] : []);
 	const models = candidates.filter(isAvailable);
 	if (models.length === 0) {
-		const role = policy?.models.join(", ") || "the active session model";
-		throw new Error(`No accessible model matched ${role}.`);
+		if (!policy) {
+			throw new Error(
+				`No modelMap policy configured for role "${role}" and its fallback ` +
+					`(the active session model${defaultModel ? ` "${defaultModel}"` : ""}) ` +
+					`is unavailable. Add a modelMap.${role} entry to config.yml, or ` +
+					"restart the session if you just added one (config loads once at session start).",
+			);
+		}
+		throw new Error(
+			`No accessible model matched role "${role}" — tried: ${candidates.join(", ")}.`,
+		);
 	}
 
 	return {
@@ -554,7 +578,12 @@ export function buildDispatchPlan(
 			throw new Error(`Duplicate dispatch task id "${task.id}".`);
 		taskIds.add(task.id);
 		const policy = request.modelMap[task.role];
-		const selection = availableModels(policy, defaultModel, isAvailable);
+		const selection = availableModels(
+			task.role,
+			policy,
+			defaultModel,
+			isAvailable,
+		);
 		const ensembleSize = policy?.ensembleSize ?? request.defaultEnsembleSize;
 		const models = modelsForAttempts({ ...selection, ensembleSize });
 		const temperatures = temperatureForAttempts(
@@ -593,6 +622,7 @@ export function buildDispatchPlan(
 					selection.strategy === DEFAULT_DISPATCH_STRATEGY ? 0 : attemptOffset,
 				strategy: selection.strategy,
 				temperatureLadder: policy?.temperatureLadder,
+				worktree: policy?.worktree,
 			});
 			attemptIndex += 1;
 		}

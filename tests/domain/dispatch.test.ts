@@ -359,6 +359,39 @@ describe("dispatch planning", () => {
 		).toThrow('Duplicate dispatch task id "same".');
 	});
 
+	// Regression test for a real production incident: /skill:centurion's scout
+	// dispatch failed against the session's default model with a bare "No
+	// accessible model matched the active session model" error that named
+	// neither the role nor the unavailable model, and gave no hint that the
+	// real cause was a missing modelMap.scout policy (vs. every configured
+	// model genuinely being down). The error must name the role and point at
+	// the fix.
+	test("names the role and points at the missing modelMap entry when a role has no policy and its session-default fallback is unavailable", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Ask the next question",
+			tasks: [
+				{
+					id: "scout-1",
+					agent: "scout",
+					role: "scout",
+					assignment: "Pick the sharpest next question",
+				},
+			],
+		});
+
+		expect(() =>
+			buildDispatchPlan(
+				request,
+				"openai-codex/gpt-5.6-luna",
+				() => false,
+				(index) => `attempt-${index}`,
+				(role) => role,
+			),
+		).toThrow(
+			/No modelMap policy configured for role "scout".*gpt-5\.6-luna.*modelMap\.scout/s,
+		);
+	});
+
 	test("rejects a task whose role has no legion-* persona, instead of silently dispatching a non-legion agent", () => {
 		const request = dispatchRequestSchema.parse({
 			task: "Audit the security posture",
@@ -417,6 +450,70 @@ describe("dispatch planning", () => {
 			"review-legion-reviewer-frontier-0",
 			"review-legion-reviewer-fallback-1",
 		]);
+	});
+
+	// worktree threading: a role's modelMap.worktree policy must reach the
+	// attempt the executor actually reads (host-dispatcher.ts branches on
+	// attempt.worktree === false to skip isolation for read-only roles).
+	test("threads a role's worktree: false policy onto every attempt for that role", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier", "fallback"],
+					strategy: "diverse",
+					ensembleSize: 2,
+					worktree: false,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts.every((attempt) => attempt.worktree === false)).toBe(
+			true,
+		);
+	});
+
+	test("leaves worktree undefined (isolated by default) when a role's policy doesn't set it", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Implement the change",
+			tasks: [
+				{
+					id: "code",
+					agent: "coder",
+					role: "coder",
+					assignment: "Implement it",
+				},
+			],
+			modelMap: {
+				coder: { models: ["frontier"], ensembleSize: 1 },
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts[0]?.worktree).toBeUndefined();
 	});
 });
 

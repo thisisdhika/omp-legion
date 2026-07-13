@@ -358,8 +358,20 @@ export class SynthesisService implements SynthesisRunner {
 		if (!firstAnswer) throw new Error(`Task ${input.taskId} has no answer.`);
 
 		const shouldAggregate = candidates.length > 1 || Boolean(input.humanNote);
-		const answer = shouldAggregate
-			? await this.#aggregator.synthesize(
+		// Real expert answers already exist at this point (clustering succeeded);
+		// the aggregator only produces the human-readable write-up on top of
+		// them. A live incident confirmed the aggregator's own model (captured
+		// once at session_start, never re-resolved) can fail to resolve when
+		// called from a background job — losing that write-up must never
+		// discard 5 genuinely completed expert results and report "every
+		// expert attempt failed" (see dispatch-service.ts's fallbackSynthesis,
+		// which is for the real zero-survivors case, not this one). Fall back
+		// to the top cluster's own raw answer instead.
+		let answer = firstAnswer.text;
+		let synthesisUsed = false;
+		if (shouldAggregate) {
+			try {
+				answer = await this.#aggregator.synthesize(
 					{
 						task: input.task,
 						taskId: input.taskId,
@@ -369,8 +381,13 @@ export class SynthesisService implements SynthesisRunner {
 						humanNote: input.humanNote,
 					},
 					input.signal,
-				)
-			: firstAnswer.text;
+				);
+				synthesisUsed = true;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				answer = `${firstAnswer.text}\n\n(Note: automatic synthesis of ${candidates.length} expert answers failed — ${message}. Showing the top expert's raw answer instead.)`;
+			}
+		}
 		return {
 			taskId: input.taskId,
 			answer,
@@ -379,7 +396,7 @@ export class SynthesisService implements SynthesisRunner {
 			clusteringMethod: clustered.method,
 			embeddingQuality: clustered.quality,
 			clusters: orderedClusters,
-			synthesisUsed: shouldAggregate,
+			synthesisUsed,
 		};
 	}
 }

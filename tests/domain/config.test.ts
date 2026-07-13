@@ -193,6 +193,29 @@ describe("resolveLegionConfig precedence", () => {
 		expect(config.modelMap.reviewer?.temperatureLadder).toBeUndefined();
 	});
 
+	// Regression test for the exact same class of bug as temperatureLadder
+	// above, live-confirmed the same way: worktree: false in a real
+	// .omp/config.yml was silently stripped by roleModelInputSchema not
+	// declaring the field, so a role's configured worktree opt-out never
+	// reached the executor and every attempt kept running isolated regardless.
+	test("preserves a role's configured worktree: false through the merge", () => {
+		const config = mergeLegionConfig({
+			modelMap: {
+				reviewer: { models: ["provider/reviewer"], worktree: false },
+			},
+		});
+
+		expect(config.modelMap.reviewer?.worktree).toBe(false);
+	});
+
+	test("a role with no configured worktree policy has it undefined (isolated by default)", () => {
+		const config = mergeLegionConfig({
+			modelMap: { reviewer: { models: ["provider/reviewer"] } },
+		});
+
+		expect(config.modelMap.reviewer?.worktree).toBeUndefined();
+	});
+
 	test("merges modelMap per role rather than replacing the whole map", () => {
 		const config = resolveLegionConfig({
 			global: { modelMap: { reviewer: { models: ["p/x"], ensembleSize: 2 } } },

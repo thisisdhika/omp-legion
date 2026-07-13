@@ -62,6 +62,14 @@ export interface ExpertExecution {
 	readonly jobContext?: unknown;
 }
 
+export interface ReviveExpertParams {
+	/** The expert's own prior result — carries the attemptId/agent/role/model needed to resume its exact session. */
+	readonly result: ExpertResult;
+	/** Sent as the follow-up turn's prompt — typically the human's HOTL edit note. */
+	readonly message: string;
+	readonly signal: AbortSignal;
+}
+
 export interface ExpertExecutor {
 	run(execution: ExpertExecution): Promise<ExpertResult>;
 	/**
@@ -73,6 +81,18 @@ export interface ExpertExecutor {
 	 * that don't need job-scoped state simply omit this method.
 	 */
 	prepareJob?(): Promise<unknown>;
+	/**
+	 * Continue a previously run expert with one more turn, reusing its live or
+	 * parked session and full prior context (files already read, reasoning
+	 * already done) instead of spawning a fresh attempt from zero. Only ever
+	 * meaningful for an attempt that ran non-isolated (see `DispatchAttempt.
+	 * worktree`) — an isolated run's worktree is merged and cleaned right
+	 * after it finishes, so the host can never resume it regardless of
+	 * executor support. Callers MUST check the originating attempt's
+	 * `worktree` policy before calling this; optional because executors that
+	 * never run non-isolated (or don't support revival at all) simply omit it.
+	 */
+	reviveExpert?(params: ReviveExpertParams): Promise<ExpertResult>;
 }
 
 export interface JobRunContext {
@@ -947,6 +967,10 @@ export class DispatchService {
 
 		let finalSynthesis = expanded.synthesis;
 		let resolution: GovernanceResolution | undefined;
+		// Reassigned only on a HOTL "edit" resolution that successfully revived
+		// at least one expert (see #reviveExperts) — otherwise stays identical
+		// to verifiedResults, preserving prior behavior exactly.
+		let editedResults: readonly ExpertResult[] = verifiedResults;
 		if (expanded.governance.shouldEscalate) {
 			const notice: EscalationNotice = {
 				jobId: context.jobId,
@@ -972,9 +996,19 @@ export class DispatchService {
 			);
 			resolution = await this.#resolveEscalation(notice, signal);
 			if (resolution.action === HOTL_DECISION_EDIT) {
+				// Revive-eligible only when the role ran non-isolated (worktree:
+				// false — see DispatchAttempt.worktree) and the executor supports
+				// it; every other case falls through unchanged to re-synthesizing
+				// the same verifiedResults, exactly as before this existed.
+				editedResults = await this.#reviveExperts(
+					template,
+					verifiedResults,
+					resolution.note ?? "",
+					signal,
+				);
 				finalSynthesis = await this.#synthesize(
 					taskId,
-					verifiedResults,
+					editedResults,
 					// ponytail: fixed #1 — use verifiedResults for HOTL re-synthesis
 					task,
 					signal,
@@ -1000,8 +1034,8 @@ export class DispatchService {
 
 		// ponytail: fixed #1 — return merged verified results in TaskDispatchOutcome
 		const mergedVerified = expanded.verifiedResult
-			? [...verifiedResults, expanded.verifiedResult]
-			: verifiedResults;
+			? [...editedResults, expanded.verifiedResult]
+			: editedResults;
 		return {
 			taskId,
 			results: mergedVerified,
@@ -1214,6 +1248,7 @@ export class DispatchService {
 			candidateIndex: spec.candidateIndex,
 			strategy,
 			temperatureLadder,
+			worktree: template?.worktree,
 		};
 	}
 
@@ -1224,6 +1259,58 @@ export class DispatchService {
 		const verified = await this.#verifyResults([result], signal);
 		// ponytail: fixed #14 — delegate to #verifyResults to deduplicate verify logic
 		return verified[0] ?? result;
+	}
+
+	/**
+	 * On a HOTL "edit" resolution, give the human's note back to the original
+	 * experts as a follow-up turn instead of only re-running the aggregator
+	 * over their stale (pre-note) answers — but only when doing so is
+	 * possible at all: revival requires both the role having run non-isolated
+	 * (`worktree: false` — an isolated attempt's worktree is merged and
+	 * cleaned right after it finishes, so the host can never resume it) and
+	 * the executor actually supporting `reviveExpert`. Neither condition
+	 * holding is the overwhelmingly common case (today's default), in which
+	 * this returns `results` completely unchanged — callers of `#synthesize`
+	 * see identical behavior to before this existed.
+	 *
+	 * A result that already errored has no live session to continue, so it
+	 * passes through unrevived rather than attempting a follow-up turn on a
+	 * subagent that never produced a real answer. A revival attempt that
+	 * itself throws (e.g. the parked session failed to resume) falls back to
+	 * the expert's original result rather than losing it — an edit note that
+	 * fails to apply to one expert must not discard that expert's otherwise
+	 * real answer from synthesis.
+	 */
+	async #reviveExperts(
+		template: DispatchAttempt | undefined,
+		results: readonly ExpertResult[],
+		message: string,
+		signal: AbortSignal,
+	): Promise<readonly ExpertResult[]> {
+		const executor = this.#options.executor;
+		const reviveExpert = executor.reviveExpert;
+		if (template?.worktree !== false || !reviveExpert) return results;
+		const revived = await Promise.all(
+			results.map(async (result) => {
+				if (result.error) return result;
+				try {
+					// .call(executor, ...) explicitly rebinds `this` — a bare
+					// `reviveExpert({...})` call would drop the receiver (a
+					// real implementation reading its own `this.#options`, e.g.
+					// HostExpertExecutor, would then throw on every call, and
+					// the catch below would silently misread that as "revival
+					// unsupported" rather than surface the real bug).
+					return await reviveExpert.call(executor, {
+						result,
+						message,
+						signal,
+					});
+				} catch {
+					return result;
+				}
+			}),
+		);
+		return this.#verifyResults(revived, signal);
 	}
 
 	async #synthesize(

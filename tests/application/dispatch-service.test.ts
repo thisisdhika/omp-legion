@@ -8,6 +8,7 @@ import {
 	type JobInfo,
 	type JobRunContext,
 	type JobScheduler,
+	type ReviveExpertParams,
 	type VerifyRequest,
 	type WinningAttempt,
 } from "../../src/application/dispatch-service";
@@ -592,6 +593,141 @@ describe("DispatchService", () => {
 		// human resolved it, not just the merged answer and raw stats.
 		expect(summary).toContain("**Escalated**");
 		expect(summary).toContain("**approved** by human decision");
+	});
+
+	// Regression/feature coverage for the "wake" mechanism: a HOTL "edit"
+	// resolution on a non-isolated (worktree: false) role gives the human's
+	// note back to the ORIGINAL experts as a follow-up turn (reusing their
+	// live/parked session and prior context) instead of only re-running the
+	// aggregator over stale, pre-note answers.
+	class RevivingExecutor implements ExpertExecutor {
+		readonly revivals: ReviveExpertParams[] = [];
+
+		async run(execution: ExpertExecution): Promise<ExpertResult> {
+			return {
+				attemptId: execution.attempt.id,
+				taskId: execution.attempt.taskId,
+				agent: execution.attempt.agent,
+				role: execution.attempt.role,
+				model: execution.attempt.model,
+				index: execution.attempt.index,
+				output: "original answer",
+				stderr: "",
+				exitCode: 0,
+				durationMs: 1,
+				tokens: 2,
+				requests: 1,
+			};
+		}
+
+		async reviveExpert(params: ReviveExpertParams): Promise<ExpertResult> {
+			this.revivals.push(params);
+			return { ...params.result, output: "revised answer after human note" };
+		}
+	}
+
+	test("revives the original expert with the human's edit note instead of only re-synthesizing stale answers", async () => {
+		const scheduler = new DeferredScheduler();
+		const repository = new RecordingRepository();
+		const synthesizer = new RecordingSynthesizer();
+		const executor = new RevivingExecutor();
+		const service = new DispatchService({
+			scheduler,
+			executor,
+			synthesizer,
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0.8,
+				disagreementThreshold: 0.4,
+				costCeiling: 100,
+				failureRateCeiling: 0.5,
+			},
+			decisionGate: async () => ({
+				action: "edit",
+				note: "double-check the null case",
+			}),
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				// "diverse" + exactly one candidate at ensembleSize 1 leaves no
+				// adaptive-expansion headroom (expansionHeadroom requires more
+				// candidates than ensembleSize) — keeps this test to exactly one
+				// attempt/one revival rather than coupling it to expansion's
+				// own (unrelated) internal behavior.
+				reviewer: {
+					models: ["frontier"],
+					strategy: "diverse",
+					ensembleSize: 1,
+					worktree: false,
+				},
+			},
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		expect(executor.revivals).toHaveLength(1);
+		expect(executor.revivals[0]?.message).toBe("double-check the null case");
+		expect(executor.revivals[0]?.result.output).toBe("original answer");
+		// The re-synthesis after revival must see the REVIVED answer, not the
+		// stale pre-note one.
+		const finalCall = synthesizer.inputs.at(-1);
+		expect(finalCall?.experts.map((e) => e.output)).toEqual([
+			"revised answer after human note",
+		]);
+	});
+
+	test("does not attempt revival when the role ran isolated (worktree left at default)", async () => {
+		const scheduler = new DeferredScheduler();
+		const repository = new RecordingRepository();
+		const executor = new RevivingExecutor();
+		const service = new DispatchService({
+			scheduler,
+			executor,
+			synthesizer: new RecordingSynthesizer(),
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0.8,
+				disagreementThreshold: 0.4,
+				costCeiling: 100,
+				failureRateCeiling: 0.5,
+			},
+			decisionGate: async () => ({ action: "edit", note: "reconsider" }),
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					agent: "reviewer",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: { reviewer: { models: ["frontier"], ensembleSize: 1 } },
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		expect(executor.revivals).toHaveLength(0);
 	});
 
 	test("merges only the synthesis-selected winner's branch and discards every sibling", async () => {
@@ -1210,6 +1346,47 @@ describe("DispatchService", () => {
 			expect(replacement?.replacementReason).toBe("quota/rate-limit");
 			expect(replacement?.replacedModel).toBe("a");
 			expect(ctx.progresses.some((p) => p.reason === "fallback")).toBe(true);
+		});
+
+		// Regression test: #replacementAttempt (built for a runtime fallback
+		// retry) used to drop the original template attempt's `worktree` field
+		// entirely — a read-only role configured worktree: false would silently
+		// fall back to isolated execution on its very first retry, defeating
+		// the whole point of the opt-out.
+		test("preserves worktree: false onto a runtime-fallback replacement attempt", async () => {
+			const scheduler = new DeferredScheduler();
+			const repository = new RecordingRepository();
+			const executor = new ScriptedExecutor((execution) =>
+				execution.attempt.model === "a"
+					? retryableResult(execution, "429 Too Many Requests: quota exhausted")
+					: okResult(execution),
+			);
+			const service = new DispatchService({
+				scheduler,
+				executor,
+				synthesizer: new RecordingSynthesizer(),
+				repository,
+				defaultModel: "a",
+				isModelAvailable: () => true,
+				resolveAgent: (role) => role,
+			});
+			service.dispatch(
+				singleTask({
+					coder: {
+						models: ["a", "b", "c"],
+						strategy: "diverse",
+						ensembleSize: 2,
+						worktree: false,
+					},
+				}),
+			);
+			const job = scheduler.jobs[0];
+			if (!job) throw new Error("Expected a scheduled job.");
+			await job(capturingContext());
+
+			expect(
+				executor.executions.every((e) => e.attempt.worktree === false),
+			).toBe(true);
 		});
 
 		test("does not retry an ordinary (non-retryable) task/validation error", async () => {
