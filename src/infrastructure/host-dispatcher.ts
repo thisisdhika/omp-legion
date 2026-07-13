@@ -176,6 +176,16 @@ export class HostExpertExecutor implements ExpertExecutor {
 			// Legion can read directly. Passing it makes executor.ts build instant
 			// MCP proxy tools from the already-connected servers instead.
 			mcpManager: MCPManager.instance(),
+			// rules is deliberately left unset: omitting it makes runSubprocess's
+			// own subagent path run its natural discovery (loadCapability against
+			// this attempt's own cwd), which already finds both the user's own
+			// project/user rules AND Legion's bundled rules/*.md automatically —
+			// confirmed live: omp-plugins.ts's extension-root sub-discovery scans
+			// every registered extension package's own rules/ directory the same
+			// way it scans agents/, no manual threading needed. Passing an
+			// explicit `rules` array here would REPLACE that discovery entirely
+			// rather than add to it, silently dropping the user's own rules for
+			// every dispatched expert — worse than doing nothing.
 			// Deliberately constructed rather than omitted: without this, every
 			// spawn silently discarded whatever session-level settings existed
 			// (runSubprocess falls back to a blank Settings.isolated() when given

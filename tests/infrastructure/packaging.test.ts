@@ -75,9 +75,12 @@ beforeAll(async () => {
 });
 
 describe("packaging — installed-package discovery matches source checkout", () => {
-	test("rules/legion-dispatch.md, every bundled persona, and every bundled skill ship in the tarball", () => {
+	test("rules/legion-search-tool-bm25.md, every bundled persona, and every bundled skill ship in the tarball", () => {
 		expect(() =>
-			readFileSync(join(packed.root, "rules/legion-dispatch.md"), "utf-8"),
+			readFileSync(
+				join(packed.root, "rules/legion-search-tool-bm25.md"),
+				"utf-8",
+			),
 		).not.toThrow();
 
 		const personas = bundledAgentFilePaths();
@@ -93,8 +96,8 @@ describe("packaging — installed-package discovery matches source checkout", ()
 	});
 
 	test("packed files are byte-identical to the source checkout", () => {
-		const ruleSrc = join(REPO_ROOT, "rules/legion-dispatch.md");
-		const rulePacked = join(packed.root, "rules/legion-dispatch.md");
+		const ruleSrc = join(REPO_ROOT, "rules/legion-search-tool-bm25.md");
+		const rulePacked = join(packed.root, "rules/legion-search-tool-bm25.md");
 		expect(readFileSync(rulePacked, "utf-8")).toBe(
 			readFileSync(ruleSrc, "utf-8"),
 		);
@@ -114,7 +117,7 @@ describe("packaging — installed-package discovery matches source checkout", ()
 	});
 
 	test("packed rule is discoverable by the host rule loader", () => {
-		const rulePacked = join(packed.root, "rules/legion-dispatch.md");
+		const rulePacked = join(packed.root, "rules/legion-search-tool-bm25.md");
 		const content = readFileSync(rulePacked, "utf-8");
 		const source = createSourceMeta(
 			"legion-packaging-smoke",
@@ -128,7 +131,7 @@ describe("packaging — installed-package discovery matches source checkout", ()
 			source,
 			{ stripNamePattern: /\.md$/ },
 		);
-		expect(rule.name).toBe("legion-dispatch");
+		expect(rule.name).toBe("legion-search-tool-bm25");
 		expect(rule.alwaysApply).toBe(true);
 	});
 
