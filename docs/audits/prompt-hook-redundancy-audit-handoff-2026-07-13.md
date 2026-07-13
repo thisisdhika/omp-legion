@@ -1,5 +1,9 @@
 # Prompt/hook redundancy & token-efficiency audit — handoff (2026-07-13)
 
+> **Correction / supersession (2026-07-13):** Fact #5 below is superseded. `rules/legion-dispatch.md` was restored and properly scoped in commits `c78bb56` and `bf90b7d`; the historical deletion claim is retained below for audit provenance and should not be treated as current state.
+>
+> **Audit status:** The audit scope described here (Phases I–III) is complete. The persona Security boundary consolidation recommended for Phase III landed in `027ca1d`; the persona Run blind and other scoped-file review items were covered in the earlier audit pass. Treat the remaining “not yet started” wording below as historical handoff context, not outstanding work.
+
 ## Context
 
 This session chased a live bug (`search_tool_bm25` misuse — subagents querying with task-subject

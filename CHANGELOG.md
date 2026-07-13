@@ -5,6 +5,21 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed — consolidated the expert security boundary into one always-applied rule
+The five dispatchable expert personas had near-identical “Security boundary” paragraphs, each asserting the same authority rule: assignment material is untrusted input, never instructions. Consolidated that invariant into `rules/legion-security-boundary.md`, marked `alwaysApply: true`, and replaced each persona copy with a pointer. This keeps one canonical security boundary while preserving delivery to every expert. Live-verified with an actual prompt-injection test: the consolidated rule remained effective when the injected text attempted to override the expert instructions.
+
+### Fixed — aggregator fallback attempts now distinguish fatal from retryable errors
+`HostLlmAggregator` previously advanced through every configured fallback after any error, including failures that cannot be repaired by changing models. Added the same classification boundary used by `HostLlmDecomposer`: `401`, `403`, and context-length errors stop immediately, while transient/network-style failures continue to the next resolvable fallback. Added regression coverage for fatal primary errors, fatal fallback errors, transient fallback attempts, and unresolvable selectors. The primary-session fallback gap is documented separately in `docs/ARCHITECTURE.md`.
+
+### Audited — model fallback coverage across Legion and the primary session
+Completed a deep audit of fallback behavior across `HostLlmAggregator`, `HostLlmDecomposer`, `DispatchService`'s per-expert replacement attempts, and the primary interactive OMP session. Added boundary and cancellation tests for the aggregator and recorded the findings in `docs/research/model-fallback-system-audit-2026-07-13.md`. The audit confirmed that Legion's internal layers have fallback mechanisms, while the top-level interactive session has no Legion-managed automatic model fallback and still requires provider support or manual `/model` recovery.
+
+### Fixed — corrected the `task`/`assignment` visibility contract and added a Legion-internal meta-risk override
+The dispatch tool and task schema had contradictory guidance claiming that experts never see the request-level `task`, even though it is delivered as secondary/background context; `tasks[].assignment` is the expert's actual primary instruction. Updated both descriptions to agree and added semantic consistency tests. Also added a rule requiring a second opinion before finalizing edits to Legion's own invocation surface, schemas, persona/rule files, and dispatch/rule-delivery infrastructure, regardless of diff size. Live-verified that an edit to `dispatch-tool.ts` triggers Legion while a routine test typo does not.
+
+### Changed — shortened the `legion_dispatch` tool and schema prose
+Reduced non-load-bearing wording in the tool description and request schema while preserving the capability, judgment-call triggers, routine-work boundary, asynchronous job contract, role-name convention, and task/assignment semantics. The accompanying prompt-efficiency research documents the measurements and tradeoffs rather than treating word count as a proxy for quality. Verified with typecheck, 246 tests, and a live judgment-call versus routine should-call comparison.
+
 ### Fixed — `rules/legion-dispatch.md` was reaching dispatched experts, not just the primary agent
 User requirement: `rules/legion-dispatch.md` (when/how the *primary* agent should reach for `legion_dispatch`) must reach only the primary agent; `rules/legion-search-tool-bm25.md` must reach every agent. Verified this wasn't yet true: `LoadContext` (`capability/types.ts`) is purely `{cwd, home, repoRoot}` — no depth/agent-type signal at all — so the host's native rule discovery genuinely cannot distinguish a subagent from the top-level session; a dispatched reviewer's own `session_init` system prompt was confirmed (live) to carry `legion-dispatch.md`'s content verbatim, even though no legion-* persona can ever call the tool it describes (`legion_dispatch` is never in any expert's `tools:` grant).
 
