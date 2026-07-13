@@ -112,6 +112,7 @@ export function createHostDispatchService(
 			modelRegistry: ctx.modelRegistry,
 			cwd: ctx.cwd,
 			policy: config.decomposer,
+			decomposerTimeoutMs: config.decomposerTimeoutMs,
 			resolveModel: (selector) => ctx.models.resolve(selector),
 			agent: agents.get(LEGION_DECOMPOSER_AGENT_NAME),
 			availableRoles,

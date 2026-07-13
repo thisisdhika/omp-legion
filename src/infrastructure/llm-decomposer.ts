@@ -6,6 +6,7 @@ import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 
 import type { DecomposerPolicy } from "../domain/config";
+import { DEFAULT_DECOMPOSER_TIMEOUT_MS } from "../domain/constants";
 import {
 	type DecomposerAuditEvent,
 	type DecompositionInput,
@@ -86,6 +87,8 @@ export type HostLlmDecomposerOptions = {
 	readonly availableRoles?: readonly AvailableRole[];
 	/** Threaded through so the decomposer's own investigation appears in the interactive "Subagents" HUD, same as any other spawn. */
 	readonly eventBus?: ExecutorOptions["eventBus"];
+	/** Hard wall-clock cap for one decomposer subprocess attempt. */
+	readonly decomposerTimeoutMs?: number;
 	/** Injectable subprocess runner; defaults to the real host runSubprocess. */
 	readonly runSubprocess?: typeof runSubprocess;
 };
@@ -257,7 +260,8 @@ export class HostLlmDecomposer implements TaskDecomposer {
 			id,
 			modelOverride: selector,
 			context: roster || undefined,
-			eventBus: this.#options.eventBus,
+			maxRuntimeMs:
+				this.#options.decomposerTimeoutMs ?? DEFAULT_DECOMPOSER_TIMEOUT_MS,
 			signal: input.signal,
 			detached: true,
 			settings: Settings.isolated(

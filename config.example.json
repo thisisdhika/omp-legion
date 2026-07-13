@@ -28,6 +28,7 @@
 			"maxConcurrentExperts": 4,
 			"verifyCommand": "bun test",
 			"decisionTimeoutMs": 1800000,
+			"decomposerTimeoutMs": 45000,
 			"expertTimeoutMs": 300000,
 			"embedding": {
 				"baseUrl": "http://127.0.0.1:11434",

@@ -16,7 +16,7 @@ import type { DecomposerAuditEvent } from "../../src/domain/decomposition";
 import { DECOMPOSER_SYSTEM_PROMPT } from "../../src/infrastructure/aggregator-prompts";
 import { HostLlmDecomposer } from "../../src/infrastructure/llm-decomposer";
 
-type Behavior = "ok" | "fail" | "empty" | "no-output";
+type Behavior = "ok" | "fail" | "empty" | "no-output" | "timeout";
 
 const SUCCESS_JSON = '{"tasks":[{"id":"t1","role":"coder","assignment":"x"}]}';
 
@@ -71,6 +71,11 @@ function makeRunSubprocess(behaviors: Record<string, Behavior>) {
 		calls.push(selector);
 		const behavior = behaviors[selector] ?? "ok";
 		if (behavior === "fail") throw new Error(`provider error for ${selector}`);
+		if (behavior === "timeout")
+			return makeResult({
+				aborted: true,
+				error: "Subagent runtime limit exceeded",
+			});
 		if (behavior === "empty") return makeResult({ output: '{"tasks":[]}' });
 		if (behavior === "no-output") return makeResult({ output: "" });
 		return makeResult({ output: SUCCESS_JSON });
@@ -118,9 +123,28 @@ describe("HostLlmDecomposer sequential fallback", () => {
 		expect(tasks[0]?.id).toBe("t1");
 		expect(calls()).toEqual(["fail", "good"]); // backup never reached
 		expect(maxInFlight()).toBe(1); // no parallelism
+
 		expect(auditEvents.map((event) => [event.selector, event.status])).toEqual([
 			["fail", "retryable-failure"],
 			["good", "success"],
+		]);
+	});
+
+	test("advances after a runtime-limited subprocess attempt", async () => {
+		const { decomposer, auditEvents, calls } = makeDecomposer({
+			policy: {
+				models: ["slow", "good"],
+				temperatureLadder: [0.2],
+			},
+			behaviors: { slow: "timeout", good: "ok" },
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		expect(calls()).toEqual(["slow", "good"]);
+		expect(auditEvents.map((event) => event.status)).toEqual([
+			"retryable-failure",
+			"success",
 		]);
 	});
 
@@ -262,6 +286,21 @@ describe("HostLlmDecomposer agent/roster wiring", () => {
 		await decomposer.decompose({ task: "do" });
 
 		expect(seen[0]?.agent).toBe(customAgent);
+	});
+
+	test("applies a bounded timeout to each subprocess attempt", async () => {
+		const { run, seen } = captureRunOptions();
+		const decomposer = new HostLlmDecomposer({
+			model: fakeModel("active"),
+			modelRegistry: stubRegistry,
+			cwd: "/tmp",
+			decomposerTimeoutMs: 12_345,
+			runSubprocess: run,
+		});
+
+		await decomposer.decompose({ task: "do" });
+
+		expect(seen[0]?.maxRuntimeMs).toBe(12_345);
 	});
 
 	test("falls back to a built-in agent (with read/grep/glob) when none is provided", async () => {

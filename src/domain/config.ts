@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
 	DEFAULT_DECISION_TIMEOUT_MS,
+	DEFAULT_DECOMPOSER_TIMEOUT_MS,
 	DEFAULT_DISPATCH_STRATEGY,
 	DEFAULT_DISPATCH_TIMEOUT_MS,
 	DEFAULT_EMBEDDING_SETTINGS,
@@ -108,6 +109,7 @@ const legionConfigInputSchema = z.object({
 	verifyCommand: z.string().trim().min(1).optional(),
 	decisionTimeoutMs: z.number().int().min(1).optional(),
 	dispatchTimeoutMs: z.number().int().min(1).optional(),
+	decomposerTimeoutMs: z.number().int().min(1).optional(),
 	expertTimeoutMs: z.number().int().min(1).optional(),
 	decomposer: decomposerInputSchema.optional(),
 });
@@ -161,6 +163,12 @@ export const legionConfigSchema = z.object({
 		.int()
 		.min(1)
 		.default(DEFAULT_DISPATCH_TIMEOUT_MS),
+	/** Wall-clock cap for one decomposition subprocess attempt. */
+	decomposerTimeoutMs: z
+		.number()
+		.int()
+		.min(1)
+		.default(DEFAULT_DECOMPOSER_TIMEOUT_MS),
 	/** Wall-clock cap per expert attempt. A stuck expert fails cleanly instead of hanging the ensemble forever. */
 	expertTimeoutMs: z.number().int().min(1).default(DEFAULT_EXPERT_TIMEOUT_MS),
 	decomposer: decomposerSchema.optional(),
@@ -218,6 +226,8 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 		verifyCommand: raw.verifyCommand,
 		decisionTimeoutMs: raw.decisionTimeoutMs ?? DEFAULT_DECISION_TIMEOUT_MS,
 		dispatchTimeoutMs: raw.dispatchTimeoutMs ?? DEFAULT_DISPATCH_TIMEOUT_MS,
+		decomposerTimeoutMs:
+			raw.decomposerTimeoutMs ?? DEFAULT_DECOMPOSER_TIMEOUT_MS,
 		expertTimeoutMs: raw.expertTimeoutMs ?? DEFAULT_EXPERT_TIMEOUT_MS,
 		decomposer,
 	});
