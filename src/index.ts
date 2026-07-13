@@ -8,6 +8,7 @@ import { registerGitCommitGuard } from "./infrastructure/git-commit-guard";
 import { loadLegionConfig } from "./infrastructure/host-config";
 import { createHostDispatchService } from "./infrastructure/host-dispatch-service";
 import { registerIrcToolGuard } from "./infrastructure/irc-tool-guard";
+import { registerLegionMetaRiskGuard } from "./infrastructure/legion-meta-risk-guard";
 import { loadSubagentRules } from "./infrastructure/rule-loader";
 import { registerTaskToolGuard } from "./infrastructure/task-tool-guard";
 import { createDispatchTool } from "./presentation/dispatch-tool";
@@ -77,5 +78,6 @@ export default function legionExtension(api: ExtensionAPI): void {
 	registerTaskToolGuard(api);
 	registerIrcToolGuard(api);
 	registerGitCommitGuard(api);
+	registerLegionMetaRiskGuard(api);
 	api.registerTool(createDispatchTool(() => service));
 }
