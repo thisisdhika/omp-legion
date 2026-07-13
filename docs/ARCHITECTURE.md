@@ -119,6 +119,28 @@ resolves gets a graceful "not ready" text response, never a crash.
 4. Wraps that into an `AgentToolResult<LegionDispatchDetails>`, calls
    `onUpdate?.(result)` (a live-render hint) and returns it.
 
+**`task` vs `tasks[].assignment` — a live-confirmed asymmetry that needs to
+be documented, not assumed obvious.** `dispatch.ts:567`
+(`buildDispatchPlan`) sets `assignment: task.assignment` on every attempt;
+`host-dispatcher.ts` then sends that value as **both** `ExecutorOptions.task`
+and `.assignment`, and `task` is what the host's `session.prompt(task, ...)`
+sends as the expert's literal, primary user-turn message. The request-level
+`task` field, by contrast, only ever becomes `ExecutorOptions.context` —
+documented as background rendered into the *system* prompt, secondary to the
+turn itself. For auto-decompose these are the same text, so the asymmetry is
+invisible. For an explicit `tasks` call they are not: a caller that puts the
+real content (file contents, constraints, what to check) only in the
+top-level `task` field and writes a short `assignment` gets exactly what it
+wrote — a thin primary prompt, with the real content relegated to secondary
+background a model may or may not weight as heavily. Live-confirmed: a
+caller did exactly this (pasted a full file into `task`, left `assignment`
+as a one-line label), reasoning `task` was the primary content and
+`assignment` a display label — backwards. `dispatchTaskSchema.assignment`/
+`.description` and `dispatchRequestSchema.task` now carry explicit
+`.describe()` text stating the real relationship, the tool's own top-level
+description states it under an "IMPORTANT" clause, and
+`rules/legion-dispatch.md` repeats it in the always-loaded usage rule.
+
 ### 3.3 Immediate planning (`DispatchService.dispatch`, `src/application/dispatch-service.ts`)
 
 ```
@@ -417,7 +439,11 @@ given none) — not just missing temperature control specifically.
 - `result.output` (the run's final text, same extraction `HostExpertExecutor` already relies on for expert answers) feeds the same `parseDecompositionResponse` JSON-tolerant parser as before — tool calls made along the way don't change the output contract, only what informs it.
 - Empty output, a nonzero exit code, or `result.error`/`result.aborted` are treated as a retryable failure (advance to the next selector) the same way a thrown completion error was before.
 
-**Unaffected by this change:** the decomposer's own persona instructions (`agents/legion-decomposer.md` — atomic-by-default bias, enhancement rules, the JSON output contract) and `DECOMPOSER_SYSTEM_PROMPT`'s fallback text, both updated to explicitly instruct investigating before enhancing rather than assuming no tools exist. `resolveAgentName`'s fail-closed role validation (§4.1) is unchanged — a role the decomposer picks still has to exactly match the real roster regardless of how it got there.
+**Unaffected by this change:** the decomposer's own persona instructions (`agents/legion-decomposer.md` — atomic-by-default bias, the JSON output contract) and `resolveAgentName`'s fail-closed role validation (§4.1) — a role the decomposer picks still has to exactly match the real roster regardless of how it got there.
+
+**Investigation scope — corrected after a second live-confirmed regression.** The first version of this fix pushed the decomposer to investigate *deeply* and transcribe everything it found into a rich, detailed assignment (explicit dimensions to check, a per-finding report structure). That produced a different, sharper failure: every `legion-coder`/`legion-reviewer`/`legion-tester` expert already carries its own `read`/`grep`/`glob`/`lsp` grant and reads the target code independently anyway — a decomposer that pre-analyzes doesn't help the expert, it **correlates every expert's blind spots to the decomposer's single read of the code**, and pre-forms the judgment work an independent ensemble exists specifically to decorrelate. (Research backing this: [Diversity Collapse in LLMs](https://arxiv.org/pdf/2505.18949) — a shared *structural* template alone, independent of content, is sufficient to collapse generative diversity; [Mixture of Complementary Agents](https://arxiv.org/abs/2605.24048) — an ensemble member's value is its complementarity with the others, not its individual thoroughness; [The Homogenization Problem in LLMs](https://arxiv.org/abs/2601.06116) — ensembles don't automatically cancel bias, shared upstream framing can make them amplify it instead.)
+
+The corrected scope: the decomposer's tool use is narrowed to **resolving what the task refers to** — confirming a named file/function/symbol is real and getting its exact path/name right, catching a typo or a nonexistent reference before an ensemble gets dispatched at it — and explicitly forbidden from reading further to analyze behavior, pre-identify issues, or prescribe *how* the expert should analyze (a checklist of dimensions, a report-structure template). `agents/legion-decomposer.md`'s "Ground the reference, don't pre-analyze" section and the equivalent `DECOMPOSER_SYSTEM_PROMPT`/`buildDecomposerPrompt` fallback text both state this explicitly, including the two concrete costs (correlated blind spots; duplicated, non-decorrelated work) rather than just asserting a rule.
 
 ### 4.2 Native `task` tool guard (`infrastructure/task-tool-guard.ts`)
 

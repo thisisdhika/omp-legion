@@ -4,6 +4,7 @@ import {
 	buildDispatchPlan,
 	classifyFailure,
 	dispatchRequestSchema,
+	dispatchTaskSchema,
 	humanReadableJobId,
 	nextReplacement,
 	resolveAgentName,
@@ -616,5 +617,34 @@ describe("selectorKey and nextReplacement", () => {
 				selfConsistencyCount: 3,
 			}),
 		).toBeUndefined();
+	});
+});
+
+// Regression test for a live-confirmed bug: a caller supplying an explicit
+// `tasks` array wrote a short `assignment` and put the real content (full
+// file contents, constraints, what to check) only in the top-level `task`
+// field -- believing `task` was the primary instruction and `assignment` a
+// display label. It's the reverse: `assignment` is what the expert actually
+// receives and acts on (dispatch.ts's buildDispatchPlan sets
+// `assignment: task.assignment` on every attempt, which host-dispatcher.ts
+// then sends as the expert's literal user-turn prompt); `task` only becomes
+// secondary system-prompt background for the whole dispatch. Nothing in the
+// schema said so, so the caller reasonably guessed backwards.
+describe("assignment vs task field documentation", () => {
+	test("assignment's own schema description states it's the real instruction, not a label", () => {
+		const description = dispatchTaskSchema.shape.assignment.description;
+		expect(description).toMatch(/actually receives and acts on/i);
+		expect(description).toMatch(/not a short label/i);
+	});
+
+	test("description's own schema description states it's display-only", () => {
+		const description = dispatchTaskSchema.shape.description.description;
+		expect(description).toMatch(/display only/i);
+	});
+
+	test("task's own schema description warns against front-loading real content there instead of assignment", () => {
+		const description = dispatchRequestSchema.shape.task.description;
+		expect(description).toMatch(/secondary background/i);
+		expect(description).toMatch(/assignment.*thin/i);
 	});
 });

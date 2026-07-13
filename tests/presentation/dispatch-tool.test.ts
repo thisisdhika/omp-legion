@@ -28,6 +28,17 @@ describe("createDispatchTool description", () => {
 		expect(tool.description).toContain("bare role name");
 		expect(tool.description).toMatch(/legion-reviewer.*rejected/);
 	});
+
+	// Regression test for a live-confirmed bug: a caller supplying explicit
+	// tasks wrote a short assignment and put the real content only in the
+	// top-level task field, believing task was the primary instruction --
+	// it's the reverse (assignment is what the expert actually receives).
+	test("warns explicit-tasks callers that assignment, not task, reaches the expert", () => {
+		const tool = createDispatchTool(() => undefined);
+		expect(tool.description).toMatch(
+			/assignment.*is the actual instruction the expert receives/i,
+		);
+	});
 });
 
 describe("describePhase", () => {

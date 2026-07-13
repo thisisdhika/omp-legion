@@ -52,8 +52,21 @@ export const dispatchTaskSchema = z.object({
 		.describe(
 			'Bare role name matching an available legion-<role> persona, e.g. "reviewer" or "coder" — not "Reviewer", not "legion-reviewer" (that becomes "legion-legion-reviewer" and is rejected). An unmatched role rejects the whole dispatch rather than substituting a different persona.',
 		),
-	assignment: z.string().trim().min(1),
-	description: z.string().trim().min(1).optional(),
+	assignment: z
+		.string()
+		.trim()
+		.min(1)
+		.describe(
+			"The complete, self-contained instruction this expert actually receives and acts on — not a short label. The expert never sees the request-level `task` field, the user's original message, or this conversation; if the real content (file contents, constraints, what to focus on) only lives in `task`, the expert never sees it. Put everything the expert needs to do the work here.",
+		),
+	description: z
+		.string()
+		.trim()
+		.min(1)
+		.optional()
+		.describe(
+			"A short one-line label for display only (HUD/logs) — never the expert's instruction. Keep it brief; it has no effect on what the expert actually does.",
+		),
 });
 
 // Kept short deliberately: this slug becomes the prefix of every attempt id
@@ -98,7 +111,13 @@ export function shortModelName(model: string): string {
 }
 
 export const dispatchRequestSchema = z.object({
-	task: z.string().trim().min(1),
+	task: z
+		.string()
+		.trim()
+		.min(1)
+		.describe(
+			"The whole dispatch's own description — used as the auto-decompose input when `tasks` is omitted, and as secondary background context for every task when `tasks` is supplied explicitly (rendered into each expert's system prompt, not as its primary instruction). When supplying explicit `tasks`, don't put the real per-task content only here and leave `assignment` thin — each task's `assignment` is what the expert actually acts on.",
+		),
 	tasks: z.array(dispatchTaskSchema).min(1).optional(),
 	modelMap: z.record(z.string(), roleModelPolicySchema).default({}),
 	defaultEnsembleSize: z

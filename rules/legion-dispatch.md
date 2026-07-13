@@ -22,7 +22,7 @@ Do not use it for:
 
 ## How it works
 
-1. Call `legion_dispatch` with `task` (the full task description). You can omit `tasks` and let Legion decompose it automatically, or supply an explicit `tasks` array yourself when you already know the natural split.
+1. Call `legion_dispatch` with `task` (the full task description). You can omit `tasks` and let Legion decompose it automatically, or supply an explicit `tasks` array yourself when you already know the natural split. When supplying explicit `tasks`, each task's own `assignment` is what the expert actually receives and acts on — `task` becomes secondary background, not any one expert's instruction. Don't front-load the real content (file contents, constraints, what to check) into `task` while leaving `assignment` a short label; put it in `assignment` directly.
 2. The call returns **immediately** with a job id — it does not block your turn. Expert results are delivered asynchronously when the job completes; do not poll in a tight loop, just continue with other work or wait for the completion notification.
 3. Internally, multiple experts (by default, several independent samples of your strongest configured model — not a blind spread across every model available) work the task in parallel, and a synthesis step reconciles their answers into one result.
 4. If the experts disagree too much, confidence is too low, or cost crosses a configured threshold, Legion escalates to a human decision (approve/reject/edit) **before** the job's answer is treated as final. This does not block your turn either — only the background job waits on it.

@@ -23,17 +23,29 @@ describe("DECOMPOSER_SYSTEM_PROMPT (fallback)", () => {
 		expect(text).toContain("Never fabricate");
 	});
 
-	// Regression test for a live-confirmed regression: after the decomposer
-	// gained real read/grep/glob tools, assignments got *shorter*, not
-	// longer -- models commonly treat a tool-call investigation as "doing the
-	// work" and then write a terse final answer, leaving what they found
-	// back in the investigation instead of transcribing it into the one
-	// string the expert actually receives. The prompt must explicitly name
-	// and forbid this collapse, not just encourage thoroughness in general.
-	test("explicitly forbids the investigate-then-write-a-short-answer collapse", () => {
-		expect(text).toMatch(
-			/short assignment.*(is not|isn't) efficient.*failure/i,
-		);
+	// Regression test for a second live-confirmed problem, discovered right
+	// after fixing the first: giving the decomposer tools and pushing it to
+	// write "richer" assignments made it pre-analyze the code and hand every
+	// expert the same pre-formed findings/checklist/report structure. Every
+	// expert already has its own read/grep/glob/lsp tools and reads the code
+	// independently -- a decomposer that pre-analyzes correlates every
+	// expert's blind spots to its own single read, defeating the reason
+	// ensembling beats a single model in the first place (see research:
+	// arXiv 2505.18949 "structural homogeneity... sufficient to constrain
+	// generative behavior"; arXiv 2601.06116 on ensembles amplifying rather
+	// than cancelling shared bias). Investigation must stay scoped to
+	// resolving *what* the task refers to, never *what's wrong with it*.
+	test("scopes tool use to resolving the reference, not analyzing behavior", () => {
+		expect(text).toMatch(/resolve what the task actually refers to/i);
+		expect(text).toMatch(/never to analyze the code's behavior/i);
+	});
+
+	test("explains why pre-analysis correlates the ensemble instead of helping it", () => {
+		expect(text).toMatch(/correlates every expert's blind spots/i);
+	});
+
+	test("forbids prescribing analysis dimensions, checklists, or report structure", () => {
+		expect(text).toMatch(/never prescribe the dimensions to check/i);
 	});
 });
 
@@ -44,9 +56,10 @@ describe("buildDecomposerPrompt", () => {
 		expect(prompt).toContain("enhanced brief");
 	});
 
-	test("instructs transcribing investigated facts into the assignment itself", () => {
+	test("scopes investigation to confirming the reference is real, not analyzing it", () => {
 		const prompt = buildDecomposerPrompt({ task: "review this" });
-		expect(prompt).toMatch(/[Tt]ranscribe/);
+		expect(prompt).toMatch(/confirm it's real/i);
+		expect(prompt).toMatch(/do not read further to analyze behavior/i);
 	});
 });
 
