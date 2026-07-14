@@ -127,6 +127,69 @@ describe("evaluateLegionMetaRiskCommit", () => {
 			).toBe(true);
 		}
 	});
+
+	test("blocks with specific message when dispatch had 0 successful attempts", () => {
+		const decision = evaluateLegionMetaRiskCommit(
+			primary,
+			"git commit -m change",
+			["src/domain/dispatch.ts"],
+			false,
+			{ successfulAttemptCount: 0, synthesisSucceeded: false },
+		);
+		expect(decision.block).toBe(true);
+		expect(decision.reason).toContain("0 expert attempts succeeded");
+		expect(decision.reason).toContain("synthesis did not fully succeed");
+		expect(decision.reason).toContain("Try dispatching again");
+	});
+
+	test("blocks with specific message when dispatch had partial expert success but synthesis failed", () => {
+		const decision = evaluateLegionMetaRiskCommit(
+			primary,
+			"git commit -m change",
+			["src/domain/dispatch.ts"],
+			false,
+			{ successfulAttemptCount: 2, synthesisSucceeded: false },
+		);
+		expect(decision.block).toBe(true);
+		expect(decision.reason).toContain("2 expert attempts succeeded");
+		expect(decision.reason).toContain("synthesis did not fully succeed");
+		expect(decision.reason).toContain("Try dispatching again");
+	});
+
+	test("uses generic message when no failed details provided", () => {
+		const decision = evaluateLegionMetaRiskCommit(
+			primary,
+			"git commit -m change",
+			["src/domain/dispatch.ts"],
+			false,
+		);
+		expect(decision.block).toBe(true);
+		expect(decision.reason).toMatch(/Call legion_dispatch/);
+	});
+
+	test("uses generic message when failed details is null", () => {
+		const decision = evaluateLegionMetaRiskCommit(
+			primary,
+			"git commit -m change",
+			["src/domain/dispatch.ts"],
+			false,
+			null,
+		);
+		expect(decision.block).toBe(true);
+		expect(decision.reason).toMatch(/Call legion_dispatch/);
+	});
+
+	test("handles empty object details without crashing", () => {
+		const decision = evaluateLegionMetaRiskCommit(
+			primary,
+			"git commit -m change",
+			["src/domain/dispatch.ts"],
+			false,
+			{},
+		);
+		expect(decision.block).toBe(true);
+		expect(decision.reason).toContain("0 expert attempts succeeded");
+	});
 });
 
 describe("LEGION_META_RISK_PATHS consistency", () => {

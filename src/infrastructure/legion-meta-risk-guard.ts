@@ -28,6 +28,9 @@ export const LEGION_META_RISK_PATHS = [
 const BASH_TOOL_NAME = "bash";
 const TASK_TOOL_NAME = "task";
 const LEGION_DISPATCH_TOOL_NAME = "legion_dispatch";
+/** Module-level storage for the last failed dispatch details, so the block message can surface why. */
+let lastFailedDispatchDetails: Record<string, unknown> | null = null;
+
 const BLOCK_REASON =
 	"This commit touches Legion-internal files. Call legion_dispatch for a second opinion before finalizing the commit.";
 
@@ -53,11 +56,31 @@ export function evaluateLegionMetaRiskCommit(
 	command: string | undefined,
 	stagedFiles: readonly string[],
 	hasSecondOpinion: boolean,
+	lastFailedDetails?: Record<string, unknown> | null,
 ): LegionMetaRiskDecision {
 	if (context?.senderKind === "expert") return { block: false };
 	if (!isGitCommitCommand(command) || hasSecondOpinion) return { block: false };
 	if (!stagedFiles.some(matchesMetaRiskPath)) return { block: false };
-	return { block: true, reason: BLOCK_REASON };
+	return { block: true, reason: buildBlockReason(lastFailedDetails) };
+}
+
+function buildBlockReason(
+	details: Record<string, unknown> | null | undefined,
+): string {
+	if (!details) {
+		return BLOCK_REASON;
+	}
+	const attemptCount =
+		typeof details.successfulAttemptCount === "number" &&
+		Number.isFinite(details.successfulAttemptCount)
+			? details.successfulAttemptCount
+			: 0;
+	const synFailed = details.synthesisSucceeded === false;
+	const parts = [`${attemptCount} expert attempts succeeded`];
+	if (synFailed) {
+		parts.push("synthesis did not fully succeed across all sub-tasks");
+	}
+	return `This commit touches Legion-internal files. Although a legion_dispatch was attempted, the result did not qualify as a valid second opinion (${parts.join("; ")}). Try dispatching again with more specific task parameters.`;
 }
 
 function stagedFiles(): string[] {
@@ -93,6 +116,7 @@ export function registerLegionMetaRiskGuard(api: ExtensionAPI): void {
 	const pendingDispatches = new Set<string>();
 	api.on("session_start", () => {
 		hasSecondOpinion = false;
+		lastFailedDispatchDetails = null;
 		pendingDispatches.clear();
 	});
 	api.on("tool_call", (event) => {
@@ -111,6 +135,7 @@ export function registerLegionMetaRiskGuard(api: ExtensionAPI): void {
 			input?.command,
 			stagedFiles(),
 			hasSecondOpinion,
+			lastFailedDispatchDetails,
 		);
 		if (decision.block) return { block: true, reason: decision.reason };
 		return;
@@ -120,6 +145,13 @@ export function registerLegionMetaRiskGuard(api: ExtensionAPI): void {
 		if (!pendingDispatches.delete(event.toolCallId)) return;
 		if (isSuccessfulLegionDispatchResult(event.isError, event.details)) {
 			hasSecondOpinion = true;
+			lastFailedDispatchDetails = null;
+		} else if (
+			!event.isError &&
+			event.details &&
+			typeof event.details === "object"
+		) {
+			lastFailedDispatchDetails = event.details as Record<string, unknown>;
 		}
 		return;
 	});
