@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { dispatchTaskSchema } from "../../src/domain/dispatch";
 const SKILL_PATH = join(import.meta.dir, "../../skills/centurion/SKILL.md");
 
 // Regression test for a live-confirmed bug: this host only recognizes the
@@ -28,17 +29,32 @@ describe("centurion skill documentation", () => {
 	test("still opts out of model-invocation (deliberate: latency/cost warrants an explicit command)", () => {
 		expect(content).toMatch(/disable-model-invocation:\s*true/);
 	});
-
-	// Regression test for a live-confirmed bug: after dispatching the scout
-	// round, the primary agent's turn kept going and presented a question
-	// built from its own reasoning instead of stopping to wait for the real
-	// legion_dispatch result -- "wait for the result" alone wasn't a concrete
-	// enough instruction to stop the model from filling the gap with a guess.
-	test("explicitly forbids drafting a question/recommendation before the real result is delivered", () => {
-		expect(content).toMatch(/No question\.\s*No options\.\s*No recommendation/);
+	test("documents the blocking legion_dispatch contract", () => {
+		expect(content).toContain(
+			"legion_dispatch` blocks until decomposition, expert execution, synthesis",
+		);
+		expect(content).not.toContain("returns immediately with a job id");
+		expect(content).not.toContain("Go dark until the real result arrives");
 	});
 
-	test("names the actual failure mode this is guarding against", () => {
-		expect(content).toContain("This has actually happened");
+	test("documents schema-valid task metadata in the example", () => {
+		expect(content).toContain(
+			'description: "Choose the sharpest unresolved question."',
+		);
+	});
+	test("parses the documented scout task example against the dispatch schema", () => {
+		expect(
+			dispatchTaskSchema.parse({
+				id: "scout-<round>",
+				role: "scout",
+				description: "Choose the sharpest unresolved question.",
+				assignment: "<the assignment from step 1>",
+			}),
+		).toMatchObject({ role: "scout", description: expect.any(String) });
+	});
+
+	test("does not describe a detached async handoff", () => {
+		expect(content).not.toContain("returns immediately with a job id");
+		expect(content).not.toContain("The job's synthesized text arrives later");
 	});
 });
