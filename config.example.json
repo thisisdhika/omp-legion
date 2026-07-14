@@ -1,6 +1,6 @@
 {
 	"//": "Example project plugin override for omp-legion. Global/project OMP config.yml files may also provide config.legion; this file is the plugin-override layer. Every field is optional.",
-	"//priority": "Effective precedence (highest wins): per-request values > project plugin overrides > global plugin overrides > project config.legion > global config.legion > Legion defaults. Nested objects deep-merge by field; invalid values emit a diagnostic and fall back safely. See docs/ARCHITECTURE.md §8.",
+	"//priority": "Effective precedence (highest wins): per-request values > project plugin overrides > global plugin overrides > project config.legion > global config.legion > Legion defaults. Nested objects deep-merge by field; invalid values emit a diagnostic and fall back safely. See ../.knowledges/legion/docs/ARCHITECTURE.md §8.",
 
 	"settings": {
 		"omp-legion": {

@@ -270,7 +270,7 @@ export async function clusterExpertAnswers(
  * consensus beats output-pattern majority voting by 19-52pp on code. Only
  * reorders which cluster leads and which of its members is representative;
  * does not touch confidence/disagreement (that recalibration is deferred —
- * see docs/plan/algorithm-audit-and-hardening-v2.md Phase 3) or split/merge
+ * see ../../../.knowledges/legion/docs/plan/algorithm-audit-and-hardening-v2.md Phase 3) or split/merge
  * any cluster. A no-op when no attempt was verified (roles with nothing to
  * execute, like legion-reviewer, or no `verifyCommand` configured at all).
  */
@@ -306,7 +306,7 @@ export function preferVerifiedCluster(
  * thresholds (confidenceFloor 0.6, disagreementThreshold 0.4, summing to
  * exactly 1.0) the two governance checks always co-fired together: one weak
  * signal double-counted as two, not two corroborating ones (see
- * docs/plan/algorithm-audit-and-hardening-v2.md §1.2/Phase 3). This measures
+ * ../../../.knowledges/legion/docs/plan/algorithm-audit-and-hardening-v2.md §1.2/Phase 3). This measures
  * fragmentation instead — how many distinct clusters exist relative to the
  * most a fully-disagreeing vote could produce — so a 5-1-1 split (one
  * dominant answer, two different lone dissenters) reads as more disagreement
