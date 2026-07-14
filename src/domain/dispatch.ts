@@ -629,8 +629,23 @@ export function buildDispatchPlan(
 
 		const agent = resolveAgent(task.role);
 		if (!agent) {
+			const trimmedLower = task.role.trim().toLowerCase();
+			// If the role already has the "legion-" prefix, the caller likely
+			// (and incorrectly) pre-prefixed it — resolveAgentName will have
+			// doubled it, causing the miss. Strip one prefix and re-resolve:
+			// if a real persona exists below the double prefix, the caller
+			// just needs to drop the prefix; if not, fall through to the
+			// generic "no such persona" error.
+			if (trimmedLower.startsWith(LEGION_AGENT_PREFIX)) {
+				const bareRole = trimmedLower.slice(LEGION_AGENT_PREFIX.length);
+				if (resolveAgent(bareRole)) {
+					throw new Error(
+						`Role "${task.role}" has an extra "${LEGION_AGENT_PREFIX}" prefix — Legion role names are bare; use role: "${bareRole}" instead (task "${task.id}").`,
+					);
+				}
+			}
 			throw new Error(
-				`Legion has no "${LEGION_AGENT_PREFIX}${task.role.trim().toLowerCase()}" persona for role "${task.role}" (task "${task.id}"); dispatch this task with the native \`task\` tool instead.`,
+				`Legion has no "${LEGION_AGENT_PREFIX}${trimmedLower}" persona for role "${task.role}" (task "${task.id}"); dispatch this task with the native \`task\` tool instead.`,
 			);
 		}
 		for (const [attemptOffset, model] of models.entries()) {

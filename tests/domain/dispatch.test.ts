@@ -474,6 +474,59 @@ describe("dispatch planning", () => {
 		).toThrow(/dispatch this task with the native `task` tool instead/);
 	});
 
+	test("detects a doubled 'legion-' prefix and gives a specific error instead of the generic 'use native task tool' message", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "legion-tester",
+					assignment: "Review it",
+				},
+			],
+		});
+
+		expect(() =>
+			buildDispatchPlan(
+				request,
+				"active",
+				() => true,
+				(index) => `attempt-${index}`,
+				// Wire resolveAgentName with the actual persona loaded, so:
+				// - resolveAgentName("legion-tester", ...) looks for
+				//   "legion-legion-tester" → undefined (enters detection)
+				// - resolveAgentName("tester", ...) looks for "legion-tester"
+				//   → found → enters the "extra prefix" error path
+				(role) => resolveAgentName(role, new Set(["legion-tester"])),
+			),
+		).toThrow(
+			/extra "legion-" prefix.*Legion role names are bare.*role: "tester"/s,
+		);
+	});
+
+	test("the doubled-prefix error does not contain the generic 'native task tool' fallthrough text", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "legion-tester",
+					assignment: "Review it",
+				},
+			],
+		});
+
+		expect(() =>
+			buildDispatchPlan(
+				request,
+				"active",
+				() => true,
+				(index) => `attempt-${index}`,
+				(role) => resolveAgentName(role, new Set(["legion-tester"])),
+			),
+		).not.toThrow(/native `task` tool/);
+	});
+
 	test("passes the resolved agent and attempt model to the id factory", () => {
 		const request = dispatchRequestSchema.parse({
 			task: "Review the change",
