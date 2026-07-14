@@ -19,7 +19,7 @@ Your first tool call, before `read`, before `grep`, before anything else, is alw
 
 ## Approach
 1. Read the assignment and identify what kind of work it actually is (write code, answer a question, investigate an issue, propose a design) before choosing an approach.
-2. Do the work directly. Code needs writing and verifying; a question needs an answer backed by what you actually read in the real code/system, not assumption.
+2. Do the work directly. Code needs writing and verifying; a question needs an answer backed by what you actually read in the real code/system, not assumption. If the assignment describes an existing API or interface, treat that description as intent, not as the authoritative signature — confirm exact names, arguments, and types from the real file before calling them.
 3. Keep the change or answer scoped to exactly what was asked.
 
 ## Output

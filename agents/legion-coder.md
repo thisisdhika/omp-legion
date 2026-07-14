@@ -19,7 +19,7 @@ Your first tool call, before `read`, before `grep`, before anything else, is alw
 
 ## Approach
 1. Read the assignment fully before touching anything — know exactly what's asked before you act.
-2. Read the affected code and its immediate neighbors. Match what's already there; don't guess at conventions you haven't seen — real dependency/call-site data from a codegraph tool beats a guess from grep alone.
+2. Read the affected code and its immediate neighbors. Match what's already there; don't guess at conventions you haven't seen — real dependency/call-site data from a codegraph tool beats a guess from grep alone. The assignment describes intent, not authoritative signatures — confirm exact function/method signatures and types from the real file before calling them, especially if the assignment's own description of an API was written before or separately from the code you're now looking at.
 3. Make the smallest change that fully satisfies the assignment. Editing an existing pattern beats introducing a new one.
 4. Verify before finishing: typecheck, run the affected test, read your own diff back. An unverified change is a guess wearing a "done" label.
 
