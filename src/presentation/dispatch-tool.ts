@@ -28,6 +28,7 @@ export interface LegionProgress {
 	readonly frame: number;
 	readonly jobId: string;
 	readonly attemptCount: number;
+	readonly attemptModels: readonly string[];
 }
 
 export interface LegionDispatchDetails {
@@ -81,7 +82,7 @@ function progressPartial(
 			recordId: progress.jobId,
 			state: "running",
 			attemptCount: progress.attemptCount,
-			attemptModels: [],
+			attemptModels: progress.attemptModels,
 			taskBreakdown: [],
 		},
 	};
@@ -280,6 +281,7 @@ function monitorInBackground(
 				frame,
 				jobId: accepted.jobId,
 				attemptCount: accepted.attemptCount,
+				attemptModels: accepted.attemptModels,
 			}),
 		);
 	};
@@ -300,6 +302,7 @@ function monitorInBackground(
 						frame: 0,
 						jobId: accepted.jobId,
 						attemptCount: accepted.attemptCount,
+						attemptModels: accepted.attemptModels,
 					}),
 				);
 				active = false;

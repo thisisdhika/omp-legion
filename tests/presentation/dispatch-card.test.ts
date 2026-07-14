@@ -368,8 +368,15 @@ describe("renderDispatchResult", () => {
 					jobId: "LegionJob",
 					recordId: "LegionJob",
 					state: "running",
-					attemptCount: 3,
-					attemptModels: [],
+					attemptCount: 5,
+					attemptModels: [
+						"model-a",
+						"model-b",
+						"model-c",
+						"model-d",
+						"model-e",
+						"model-f",
+					],
 					taskBreakdown: [],
 				},
 			},
@@ -379,7 +386,8 @@ describe("renderDispatchResult", () => {
 
 		const body = renderText(card);
 		expect(body).toContain("Legion");
-		expect(body).toContain("SYNTHESIZING — merging outputs");
+		expect(body).toContain("Mixtures");
+		expect(body).toContain("experts: ~6 models");
 	});
 
 	test("renders the synthesis result as a labeled Result section", () => {
