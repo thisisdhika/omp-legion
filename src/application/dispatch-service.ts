@@ -362,6 +362,9 @@ function attemptFailureRate(results: readonly ExpertResult[]): number {
 	).length;
 	return failed / results.length;
 }
+function isSuccessfulExpertResult(result: ExpertResult): boolean {
+	return result.exitCode === 0 && !result.aborted && !result.error;
+}
 
 function normalizeHumanDecision(
 	taskId: string,
@@ -710,6 +713,11 @@ export class DispatchService {
 		}
 
 		let auditFailurePersisted = false;
+		let outcomes: TaskDispatchOutcome[] = [];
+		let results: readonly ExpertResult[] = [];
+		let syntheses: readonly SynthesisResult[] = [];
+		let governance: readonly GovernanceDecision[] = [];
+		let resolutions: readonly GovernanceResolution[] = [];
 		try {
 			const attemptsByTask = new Map<string, DispatchAttempt[]>();
 			for (const attempt of plan.attempts) {
@@ -720,18 +728,12 @@ export class DispatchService {
 
 			// Prepared once for the whole job (not per attempt, not per task) so
 			// every concurrent attempt diffs against the same starting point —
+			const jobProgress = { completed: 0, total: plan.attempts.length };
+
 			// see ExpertExecutor.prepareJob's doc comment.
 
 			// Shared across every concurrent #dispatchTask call below so the
-			// "N/M experts finished" progress a live view reads reflects the
-			// whole job, not just whichever task's own attempts happened to
-			// report last — a multi-task dispatch previously showed one task's
-			// local total (e.g. "1/3") while a sibling task's attempts kept
-			// completing invisibly, leaving the reported denominator smaller
-			// than the Mixtures card's own job-wide total (confirmed live).
-			const jobProgress = { completed: 0, total: plan.attempts.length };
-
-			const outcomes = await Promise.all(
+			outcomes = await Promise.all(
 				[...attemptsByTask.entries()].map(async ([taskId, attempts]) =>
 					this.#dispatchTask({
 						taskId,
@@ -745,18 +747,18 @@ export class DispatchService {
 					}),
 				),
 			);
-			const results = outcomes.flatMap((outcome) => outcome.results);
-			const syntheses = outcomes.flatMap((outcome) =>
+			results = outcomes.flatMap((outcome) => outcome.results);
+			syntheses = outcomes.flatMap((outcome) =>
 				outcome.expansion
 					? [outcome.initialSynthesis, outcome.expansion.synthesis]
 					: [outcome.initialSynthesis],
 			);
-			const governance = outcomes.flatMap((outcome) =>
+			governance = outcomes.flatMap((outcome) =>
 				outcome.expansion
 					? [outcome.initialGovernance, outcome.expansion.governance]
 					: [outcome.initialGovernance],
 			);
-			const resolutions = outcomes.flatMap((outcome) =>
+			resolutions = outcomes.flatMap((outcome) =>
 				outcome.resolution ? [outcome.resolution] : [],
 			);
 			const rejected = resolutions.find(
@@ -815,8 +817,8 @@ export class DispatchService {
 					}
 				}
 			}
-			await this.#options.branchMerger?.discardBranches(loserBranches);
 			await this.#options.branchMerger?.mergeWinners(winners);
+			await this.#options.branchMerger?.discardBranches(loserBranches);
 			this.#options.repository.complete(
 				context.jobId,
 				results,
@@ -848,10 +850,10 @@ export class DispatchService {
 			if (!auditFailurePersisted) {
 				const message = error instanceof Error ? error.message : String(error);
 				this.#options.repository.fail(context.jobId, message, now(), {
-					results: [],
-					syntheses: [],
-					governance: [],
-					resolutions: [],
+					results,
+					syntheses,
+					governance,
+					resolutions,
 					decomposerAttempts,
 				});
 			}
@@ -1322,12 +1324,6 @@ export class DispatchService {
 			results.map(async (result) => {
 				if (result.error) return result;
 				try {
-					// .call(executor, ...) explicitly rebinds `this` — a bare
-					// `reviveExpert({...})` call would drop the receiver (a
-					// real implementation reading its own `this.#options`, e.g.
-					// HostExpertExecutor, would then throw on every call, and
-					// the catch below would silently misread that as "revival
-					// unsupported" rather than surface the real bug).
 					return await reviveExpert.call(executor, {
 						result,
 						message,
@@ -1338,7 +1334,12 @@ export class DispatchService {
 				}
 			}),
 		);
-		return this.#verifyResults(revived, signal);
+		const verified = await this.#verifyResults(revived, signal);
+		return verified.map((result, index) => {
+			if (isSuccessfulExpertResult(result)) return result;
+			const original = results[index];
+			return original ?? result;
+		});
 	}
 
 	async #synthesize(

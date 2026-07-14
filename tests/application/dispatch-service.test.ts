@@ -14,6 +14,7 @@ import {
 } from "../../src/application/dispatch-service";
 import { mergeLegionConfig } from "../../src/domain/config";
 import type {
+	DispatchAuditData,
 	DispatchRecord,
 	ExpertResult,
 	OrchestrationRepository,
@@ -130,6 +131,23 @@ class RecordingVerifier {
 		return request.branchName.endsWith("-0");
 	}
 }
+class FailingMergeBranchMerger extends RecordingBranchMerger {
+	readonly events: string[] = [];
+
+	override async mergeWinners(
+		winners: readonly WinningAttempt[],
+	): Promise<void> {
+		this.events.push(`merge:${winners.length}`);
+		throw new Error("merge failed");
+	}
+
+	override async discardBranches(
+		branchNames: readonly string[],
+	): Promise<void> {
+		this.events.push(`discard:${branchNames.length}`);
+		await super.discardBranches(branchNames);
+	}
+}
 
 class RecordingSynthesizer implements SynthesisRunner {
 	readonly inputs: SynthesisInput[] = [];
@@ -181,7 +199,20 @@ class RecordingRepository implements OrchestrationRepository {
 			};
 	}
 
-	fail(): void {}
+	fail(
+		_id: string,
+		error: string,
+		_completedAt: number,
+		audit?: DispatchAuditData,
+	): void {
+		if (this.record)
+			this.record = {
+				...this.record,
+				state: "failed",
+				error,
+				...(audit ?? {}),
+			};
+	}
 
 	get(): DispatchRecord | undefined {
 		return this.record;
@@ -728,6 +759,14 @@ describe("DispatchService", () => {
 			return { ...params.result, output: "revised answer after human note" };
 		}
 	}
+	class FailedRevivingExecutor extends RevivingExecutor {
+		override async reviveExpert(
+			params: ReviveExpertParams,
+		): Promise<ExpertResult> {
+			this.revivals.push(params);
+			return { ...params.result, output: "failed revival", exitCode: 1 };
+		}
+	}
 
 	test("revives the original expert with the human's edit note instead of only re-synthesizing stale answers", async () => {
 		const scheduler = new DeferredScheduler();
@@ -789,6 +828,50 @@ describe("DispatchService", () => {
 		const finalCall = synthesizer.inputs.at(-1);
 		expect(finalCall?.experts.map((e) => e.output)).toEqual([
 			"revised answer after human note",
+		]);
+	});
+	test("preserves the original result when revival returns a failed result", async () => {
+		const scheduler = new DeferredScheduler();
+		const synthesizer = new RecordingSynthesizer();
+		const service = new DispatchService({
+			scheduler,
+			executor: new FailedRevivingExecutor(),
+			synthesizer,
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			governanceThresholds: {
+				confidenceFloor: 0.8,
+				disagreementThreshold: 0.4,
+				costCeiling: 100,
+				failureRateCeiling: 0.5,
+			},
+			decisionGate: async () => ({
+				action: "edit",
+				note: "double-check the null case",
+			}),
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					strategy: "diverse",
+					ensembleSize: 1,
+					worktree: false,
+				},
+			},
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await job(context());
+
+		const finalCall = synthesizer.inputs.at(-1);
+		expect(finalCall?.experts.map((expert) => expert.output)).toEqual([
+			"original answer",
 		]);
 	});
 
@@ -872,6 +955,37 @@ describe("DispatchService", () => {
 		expect(
 			branchMerger.discarded.flat().every((name) => !name.endsWith("-0")),
 		).toBe(true);
+	});
+	test("retains audit evidence and loser branches when winner merge fails", async () => {
+		const scheduler = new DeferredScheduler();
+		const branchMerger = new FailingMergeBranchMerger();
+		const repository = new RecordingRepository();
+		const service = new DispatchService({
+			scheduler,
+			executor: new BranchingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			branchMerger,
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+			defaultEnsembleSize: 2,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await expect(job(context())).rejects.toThrow("merge failed");
+
+		expect(repository.record?.state).toBe("failed");
+		expect(repository.record?.results).toHaveLength(2);
+		expect(repository.record?.syntheses).toHaveLength(1);
+		expect(repository.record?.governance).toHaveLength(1);
+		expect(branchMerger.events).toEqual(["merge:1"]);
+		expect(branchMerger.discarded).toHaveLength(0);
 	});
 
 	test("independently verifies every branched attempt and passes the result to synthesis", async () => {
