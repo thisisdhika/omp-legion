@@ -1,4 +1,8 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import {
+	type SubagentLifecyclePayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 
 import {
 	type DispatchContext,
@@ -148,9 +152,25 @@ export function releaseDispatch(
 	const timer = state.timers.get(toolCallId);
 	if (timer?.generation === entry.generation) {
 		clearTimeout(timer.handle);
+
 		state.timers.delete(toolCallId);
 	}
 	state.pending.delete(toolCallId);
+}
+function trackNativeTaskLifecycle(
+	state: DispatchAdmissionState,
+	payload: SubagentLifecyclePayload,
+): void {
+	const toolCallId = payload.parentToolCallId;
+	if (!payload.detached || !toolCallId) return;
+	if (payload.status === "started") {
+		if (state.pending.has(toolCallId)) return;
+		const generation = ++state.generation;
+		state.pending.set(toolCallId, { kind: "task", primary: true, generation });
+		scheduleEviction(state, toolCallId, generation);
+		return;
+	}
+	releaseDispatch(state, toolCallId);
 }
 
 function clearAdmissions(state: DispatchAdmissionState): void {
@@ -183,6 +203,9 @@ export function registerDispatchConcurrencyGuard(
 	const state = createDispatchAdmissionState(
 		options.staleAdmissionTimeoutMs ?? DEFAULT_STALE_ADMISSION_TIMEOUT_MS,
 	);
+	api.events?.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (payload) => {
+		trackNativeTaskLifecycle(state, payload as SubagentLifecyclePayload);
+	});
 	api.on("session_start", () => clearAdmissions(state));
 	api.on("tool_call", (event) => {
 		const decision = evaluateDispatchAdmission(

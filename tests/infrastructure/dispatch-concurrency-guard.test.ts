@@ -4,6 +4,8 @@ import type {
 	ToolCallEvent,
 	ToolResultEvent,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
 import {
 	type DispatchContext,
@@ -36,13 +38,15 @@ type GuardHandlers = {
 	toolCall?: (event: ToolCallEvent) => unknown;
 	toolResult?: (event: ToolResultEvent) => unknown;
 	sessionStart?: () => unknown;
+	eventBus: EventBus;
 };
 
 function registerHandlers(
 	staleAdmissionTimeoutMs = 10 * 60_000,
 ): GuardHandlers {
-	const handlers: GuardHandlers = {};
+	const handlers: GuardHandlers = { eventBus: new EventBus() };
 	const api = {
+		events: handlers.eventBus,
 		on(event: string, handler: (event?: unknown) => unknown) {
 			if (event === "tool_call")
 				handlers.toolCall = handler as GuardHandlers["toolCall"];
@@ -115,6 +119,41 @@ describe("dispatch concurrency guard", () => {
 		expect(admit(state, "legion_dispatch", "recovered-legion").block).toBe(
 			false,
 		);
+	});
+	test("tracks detached native tasks through the real lifecycle event channel", () => {
+		const handlers = registerHandlers();
+		handlers.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "agent-1",
+			agent: "task",
+			agentSource: "bundled",
+			status: "started",
+			parentToolCallId: "native-call",
+			index: 0,
+			detached: true,
+		});
+		const blocked = handlers.toolCall?.({
+			type: "tool_call",
+			toolCallId: "legion-call",
+			toolName: "legion_dispatch",
+			input: {},
+		}) as { block?: boolean } | undefined;
+		expect(blocked?.block).toBe(true);
+		handlers.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "agent-1",
+			agent: "task",
+			agentSource: "bundled",
+			status: "completed",
+			parentToolCallId: "native-call",
+			index: 0,
+			detached: true,
+		});
+		const allowed = handlers.toolCall?.({
+			type: "tool_call",
+			toolCallId: "legion-call-2",
+			toolName: "legion_dispatch",
+			input: {},
+		}) as { block?: boolean } | undefined;
+		expect(allowed?.block ?? false).toBe(false);
 	});
 
 	test("tool_result releases the admission and clears its timer", () => {
