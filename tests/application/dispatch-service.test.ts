@@ -135,7 +135,7 @@ class RecordingVerifier {
 
 	async verify(request: VerifyRequest): Promise<boolean> {
 		this.calls.push(request);
-		return request.branchName.endsWith("-0");
+		return !/\d$/.test(request.branchName);
 	}
 }
 class FailingMergeBranchMerger extends RecordingBranchMerger {
@@ -984,12 +984,12 @@ describe("DispatchService", () => {
 		expect(branchMerger.merged).toHaveLength(1);
 		expect(branchMerger.merged[0]).toHaveLength(1);
 		expect(branchMerger.merged[0]?.[0]?.taskId).toBe("review");
-		expect(branchMerger.merged[0]?.[0]?.branchName).toMatch(/-0$/);
+		expect(branchMerger.merged[0]?.[0]?.branchName).not.toMatch(/\d$/);
 
 		// The other two attempts' branches are discarded, never merged.
 		expect(branchMerger.discarded.flat()).toHaveLength(2);
 		expect(
-			branchMerger.discarded.flat().every((name) => !name.endsWith("-0")),
+			branchMerger.discarded.flat().every((name) => /\d$/.test(name)),
 		).toBe(true);
 	});
 	test("retains audit evidence and loser branches when winner merge fails", async () => {
@@ -1060,7 +1060,7 @@ describe("DispatchService", () => {
 		const verifiedFlags = synthesizer.inputs[0]?.experts.map(
 			(expert) => expert.verified,
 		);
-		// RecordingVerifier passes only the branch ending in "-0" (attempt index 0).
+		// RecordingVerifier passes only the unsuffixed branch (attempt index 0).
 		expect(verifiedFlags).toEqual([true, false, false]);
 	});
 

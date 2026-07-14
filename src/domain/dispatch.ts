@@ -563,6 +563,10 @@ export function buildDispatchPlan(
 	const warnedRoles = new Set<string>();
 	const warnedHeadroomRoles = new Set<string>();
 	const warnings: string[] = [];
+	// Plan-wide: the production factory uses a shared idPrefix (job slug) for
+	// all tasks, so cross-task collisions (same agent+model) are real and
+	// must be disambiguated within the same map.
+	const seenIds = new Map<string, number>();
 
 	for (const task of request.tasks ?? []) {
 		if (taskIds.has(task.id))
@@ -610,8 +614,12 @@ export function buildDispatchPlan(
 			);
 		}
 		for (const [attemptOffset, model] of models.entries()) {
+			const baseId = makeAttemptId(attemptIndex, task.id, agent, model);
+			const seen = seenIds.get(baseId) ?? 0;
+			const id = seen === 0 ? baseId : `${baseId}-${seen + 1}`;
+			seenIds.set(baseId, seen + 1);
 			attempts.push({
-				id: makeAttemptId(attemptIndex, task.id, agent, model),
+				id,
 				taskId: task.id,
 				agent,
 				role: task.role,

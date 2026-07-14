@@ -496,13 +496,85 @@ describe("dispatch planning", () => {
 			request,
 			undefined,
 			() => true,
-			(index, taskId, agent, model) => `${taskId}-${agent}-${model}-${index}`,
+			(_index, taskId, agent, model) => `${taskId}-${agent}-${model}`,
 			() => "legion-reviewer",
 		);
 
 		expect(plan.attempts.map((attempt) => attempt.id)).toEqual([
-			"review-legion-reviewer-frontier-0",
-			"review-legion-reviewer-fallback-1",
+			"review-legion-reviewer-frontier",
+			"review-legion-reviewer-fallback",
+		]);
+	});
+	test("appends a disambiguating suffix only when the same id collides within a plan", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier", "frontier"],
+					strategy: "self-consistency",
+					ensembleSize: 2,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(_index, taskId, agent, model) => `${taskId}-${agent}-${model}`,
+			() => "legion-reviewer",
+		);
+
+		expect(plan.attempts.map((attempt) => attempt.id)).toEqual([
+			"review-legion-reviewer-frontier",
+			"review-legion-reviewer-frontier-2",
+		]);
+	});
+	test("disambiguates cross-task collisions when different tasks share the same agent+model", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review and code the change",
+			tasks: [
+				{
+					id: "review",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+				{
+					id: "code",
+					role: "reviewer",
+					assignment: "Code it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					strategy: "self-consistency",
+					ensembleSize: 1,
+				},
+			},
+		});
+
+		// The production factory uses idPrefix for all tasks, so two tasks
+		// with the same agent+model would produce identical base ids without
+		// collision tracking.
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(_index, _taskId, agent, model) => `prefix-${agent}-${model}`,
+			() => "legion-reviewer",
+		);
+
+		expect(plan.attempts.map((attempt) => attempt.id)).toEqual([
+			"prefix-legion-reviewer-frontier",
+			"prefix-legion-reviewer-frontier-2",
 		]);
 	});
 

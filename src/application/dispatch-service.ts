@@ -545,12 +545,13 @@ export class DispatchService {
 			request,
 			this.#options.defaultModel,
 			this.#options.isModelAvailable,
-			// e.g. "legion-review-the-change-coder-mimo-v2.5-free-0" — agent and
-			// model tell you *what's actually running*; taskId+index alone (the
-			// prior shape) told you neither, and the full job slug already made
-			// the id long before this part even started.
-			(index, _taskId, agent, model) =>
-				`${idPrefix}-${shortAgentName(agent)}-${shortModelName(model)}-${index}`,
+			// e.g. "legion-review-the-change-coder-mimo-v2.5-free" — agent and
+			// model tell you *what's actually running*; the full job slug already
+			// made the id long before this part even started. A numeric suffix
+			// (e.g. "-2") is appended only on collision within the same plan
+			// (self-consistency sampling or diverse cycling through a small pool).
+			(_index, _taskId, agent, model) =>
+				`${idPrefix}-${shortAgentName(agent)}-${shortModelName(model)}`,
 			this.#options.resolveAgent,
 		);
 	}
