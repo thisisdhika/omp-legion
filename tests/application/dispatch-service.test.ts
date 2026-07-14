@@ -84,6 +84,13 @@ class RecordingExecutor implements ExpertExecutor {
 		};
 	}
 }
+class PrepareFailingExecutor extends RecordingExecutor {
+	async prepareJob(): Promise<never> {
+		throw new Error(
+			"Legion requires cwd to be a git repository for isolated dispatch execution; run git init or dispatch from an existing repository.",
+		);
+	}
+}
 
 /** Every attempt "succeeds" with its own isolated branch, so merge/discard decisions are observable. */
 class BranchingExecutor implements ExpertExecutor {
@@ -499,7 +506,7 @@ describe("DispatchService", () => {
 		);
 	});
 
-	test("checks isolation prerequisites before automatic decomposition", async () => {
+	test("checks isolation prerequisites when the plan needs isolation", async () => {
 		const scheduler = new DeferredScheduler();
 		let decomposed = false;
 		const executor: ExpertExecutor = {
@@ -535,7 +542,36 @@ describe("DispatchService", () => {
 		await expect(job(context())).rejects.toThrow(
 			/ requires cwd to be a git repository /,
 		);
-		expect(decomposed).toBe(false);
+		expect(decomposed).toBe(true);
+	});
+	test("runs all-read-only dispatches without preparing Git isolation", async () => {
+		const scheduler = new DeferredScheduler();
+		const service = new DispatchService({
+			scheduler,
+			executor: new PrepareFailingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository: new RecordingRepository(),
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [{ id: "review", role: "reviewer", assignment: "Review it" }],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					ensembleSize: 1,
+					worktree: false,
+				},
+			},
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await expect(job(context())).resolves.toContain(
+			"expert attempts completed",
+		);
 	});
 
 	test("uses session config defaults when request omits policy", () => {

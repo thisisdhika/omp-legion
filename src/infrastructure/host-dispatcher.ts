@@ -139,15 +139,6 @@ export class HostExpertExecutor implements ExpertExecutor {
 		if (!agent)
 			throw new Error(`Unknown host agent "${execution.attempt.agent}".`);
 
-		const isolationContext = execution.jobContext as
-			| IsolationContext
-			| undefined;
-		if (!isolationContext) {
-			throw new Error(
-				"Legion isolation context missing; prepareJob() must run before any attempt.",
-			);
-		}
-
 		const baseOptions: ExecutorOptions = {
 			cwd: this.#options.cwd,
 			agent,
@@ -278,6 +269,14 @@ export class HostExpertExecutor implements ExpertExecutor {
 			};
 		}
 
+		const isolationContext = execution.jobContext as
+			| IsolationContext
+			| undefined;
+		if (!isolationContext) {
+			throw new Error(
+				"Legion isolation context missing; prepareJob() must run before any attempt.",
+			);
+		}
 		const isolatedOptions: IsolatedRunOptions = {
 			baseOptions,
 			context: isolationContext,

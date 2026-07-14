@@ -675,16 +675,18 @@ export class DispatchService {
 		parentToolCallId?: string,
 	): Promise<string> {
 		const decomposerAttempts: DecomposerAuditEvent[] = [];
-		// Validate isolation prerequisites before automatic decomposition or any
-		// model call. A missing git repository must fail immediately rather than
-		// spending minutes retrying a decomposer that can never run the dispatch.
-		const jobContext = await this.#options.executor.prepareJob?.();
 		const resolvedRequest = await this.#resolveRequest(
 			request,
 			context,
 			decomposerAttempts,
 		);
 		const plan = this.#buildPlan(resolvedRequest, context.jobId);
+		const needsIsolation = plan.attempts.some(
+			(attempt) => attempt.worktree !== false,
+		);
+		const jobContext = needsIsolation
+			? await this.#options.executor.prepareJob?.()
+			: undefined;
 		const now = this.#options.now ?? Date.now;
 		this.#options.repository.create({
 			id: context.jobId,
