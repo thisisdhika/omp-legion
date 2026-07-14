@@ -424,6 +424,7 @@ const RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/timeout/i,
 	/overload(?:ed)?/i,
 	/capacity/i,
+	/resource[\s_-]?exhausted/i,
 	// Transport-level transient errors
 	/fetch failed/i,
 	/ECONNRESET/i,
@@ -560,6 +561,7 @@ export function buildDispatchPlan(
 	let attemptIndex = 0;
 	const taskIds = new Set<string>();
 	const warnedRoles = new Set<string>();
+	const warnedHeadroomRoles = new Set<string>();
 	const warnings: string[] = [];
 
 	for (const task of request.tasks ?? []) {
@@ -587,6 +589,18 @@ export function buildDispatchPlan(
 				warnedRoles.add(task.role);
 				warnings.push(warning);
 			}
+		}
+		const hasHeadroom = expansionHeadroom(
+			selection.strategy,
+			selection.candidates,
+			policy?.temperatureLadder,
+			ensembleSize,
+		);
+		if (!hasHeadroom && !warnedHeadroomRoles.has(task.role)) {
+			warnedHeadroomRoles.add(task.role);
+			warnings.push(
+				`Role "${task.role}" has no adaptive expansion headroom beyond its initial ensemble; runtime fallback may be unavailable if every expert attempt fails.`,
+			);
 		}
 
 		const agent = resolveAgent(task.role);

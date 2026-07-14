@@ -82,6 +82,67 @@ describe("dispatch planning", () => {
 		]);
 	});
 
+	test("warns when diverse candidates equal the initial ensemble size", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["security", "general"],
+					strategy: "diverse",
+					ensembleSize: 2,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.warnings).toHaveLength(1);
+		expect(plan.warnings[0]).toContain("no adaptive expansion headroom");
+	});
+
+	test("does not warn when self-consistency has expansion headroom", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					strategy: "self-consistency",
+					ensembleSize: 2,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.warnings).toEqual([]);
+	});
+
 	test("retains unavailable configured candidates for runtime fallback", () => {
 		const request = dispatchRequestSchema.parse({
 			task: "Review the change",
@@ -159,9 +220,16 @@ describe("dispatch planning", () => {
 			(role) => role,
 		);
 
-		expect(plan.warnings).toHaveLength(1);
+		expect(plan.warnings).toHaveLength(2);
 		expect(plan.warnings[0]).toContain("reviewer");
 		expect(plan.warnings[0]).toContain("self-consistency");
+		expect(
+			plan.warnings.some(
+				(warning) =>
+					warning.includes("no adaptive expansion headroom") &&
+					warning.includes("reviewer"),
+			),
+		).toBe(true);
 	});
 
 	test("warns when diverse ensembleSize leaves configured models unreachable", () => {
@@ -209,7 +277,7 @@ describe("dispatch planning", () => {
 				reviewer: {
 					models: ["frontier"],
 					strategy: "self-consistency",
-					ensembleSize: 3,
+					ensembleSize: 2,
 				},
 			},
 		});
@@ -607,13 +675,14 @@ describe("runtime fallback classification", () => {
 		expect(classifyFailure(result({ exitCode: 0 }))).toBe("ok");
 	});
 
-	test("classifies retryable provider failures (rate-limit, unavailable, timeout)", () => {
+	test("classifies retryable provider failures (rate-limit, unavailable, timeout, resource exhaustion)", () => {
 		for (const error of [
 			"429 Too Many Requests",
 			"rate limit reached, slow down",
 			"model 'm' is unavailable",
 			"unavailable model",
 			"request timed out after 30s",
+			"server_error: Upstream error from Nvidia: ResourceExhausted: Worker local total request limit reached (32/32)",
 		]) {
 			expect(classifyFailure(result({ exitCode: 1, error }))).toBe("retryable");
 		}
