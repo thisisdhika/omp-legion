@@ -155,6 +155,14 @@ class FailingMergeBranchMerger extends RecordingBranchMerger {
 		await super.discardBranches(branchNames);
 	}
 }
+class FailingDiscardBranchMerger extends RecordingBranchMerger {
+	override async discardBranches(
+		branchNames: readonly string[],
+	): Promise<void> {
+		await super.discardBranches(branchNames);
+		throw new Error("discard failed");
+	}
+}
 
 class RecordingSynthesizer implements SynthesisRunner {
 	readonly inputs: SynthesisInput[] = [];
@@ -992,7 +1000,7 @@ describe("DispatchService", () => {
 			branchMerger.discarded.flat().every((name) => /\d$/.test(name)),
 		).toBe(true);
 	});
-	test("retains audit evidence and loser branches when winner merge fails", async () => {
+	test("discards all branches when winner merge fails", async () => {
 		const scheduler = new DeferredScheduler();
 		const branchMerger = new FailingMergeBranchMerger();
 		const repository = new RecordingRepository();
@@ -1016,12 +1024,15 @@ describe("DispatchService", () => {
 		if (!job) throw new Error("Expected a scheduled job.");
 		await expect(job(context())).rejects.toThrow("merge failed");
 
+		// The merge failure was caught by the catch-block cleanup, which
+		// discards every branch (winners and losers alike) so nothing
+		// dangles.
 		expect(repository.record?.state).toBe("failed");
 		expect(repository.record?.results).toHaveLength(2);
 		expect(repository.record?.syntheses).toHaveLength(1);
 		expect(repository.record?.governance).toHaveLength(1);
-		expect(branchMerger.events).toEqual(["merge:1"]);
-		expect(branchMerger.discarded).toHaveLength(0);
+		expect(branchMerger.events).toEqual(["merge:1", "discard:2"]);
+		expect(branchMerger.discarded.flat()).toHaveLength(2);
 	});
 
 	test("independently verifies every branched attempt and passes the result to synthesis", async () => {
@@ -1436,6 +1447,47 @@ describe("DispatchService", () => {
 		// attempt's branch (winner included) is discarded instead.
 		expect(branchMerger.merged).toHaveLength(0);
 		expect(branchMerger.discarded.flat()).toHaveLength(4);
+	});
+	test("discards every created branch when an unexpected exception aborts the dispatch", async () => {
+		const scheduler = new DeferredScheduler();
+		const branchMerger = new FailingDiscardBranchMerger();
+		const repository = new RecordingRepository();
+		const service = new DispatchService({
+			scheduler,
+			executor: new BranchingExecutor(),
+			synthesizer: new RecordingSynthesizer(),
+			repository,
+			defaultModel: "frontier",
+			isModelAvailable: () => true,
+			resolveAgent: (role) => role,
+			branchMerger,
+		});
+
+		service.dispatch({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			defaultEnsembleSize: 2,
+		});
+		const job = scheduler.jobs[0];
+		if (!job) throw new Error("Expected a scheduled job.");
+		await expect(job(context())).rejects.toThrow("discard failed");
+
+		// The discard failure mid-completion was caught by the catch-block
+		// cleanup, which discards every branch (including the already-merged
+		// winner) so nothing dangles.
+		expect(repository.record?.state).toBe("failed");
+		expect(branchMerger.merged).toHaveLength(1);
+		// Two calls: normal path's loser discard (threw), then catch block's
+		// full discard (throw swallowed).
+		expect(branchMerger.discarded).toHaveLength(2);
+		expect(branchMerger.discarded[0]).toHaveLength(1);
+		expect(branchMerger.discarded[1]).toHaveLength(2);
 	});
 
 	// Regression coverage: #resolveEscalation blocks on a human decision (or

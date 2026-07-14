@@ -716,6 +716,7 @@ export class DispatchService {
 		}
 
 		let auditFailurePersisted = false;
+		let branchesCleanedUp = false;
 		let outcomes: TaskDispatchOutcome[] = [];
 		let results: readonly ExpertResult[] = [];
 		let syntheses: readonly SynthesisResult[] = [];
@@ -776,6 +777,7 @@ export class DispatchService {
 						result.branchName ? [result.branchName] : [],
 					),
 				);
+				branchesCleanedUp = true;
 				auditFailurePersisted = true;
 				this.#options.repository.fail(
 					context.jobId,
@@ -822,6 +824,7 @@ export class DispatchService {
 			}
 			await this.#options.branchMerger?.mergeWinners(winners);
 			await this.#options.branchMerger?.discardBranches(loserBranches);
+			branchesCleanedUp = true;
 			this.#options.repository.complete(
 				context.jobId,
 				results,
@@ -859,6 +862,18 @@ export class DispatchService {
 					resolutions,
 					decomposerAttempts,
 				});
+			}
+			// Discard every isolated attempt branch that was created before the
+			// failure — the normal and rejection paths both do this, but an
+			// unexpected exception skips those blocks entirely.
+			if (!branchesCleanedUp) {
+				try {
+					await this.#options.branchMerger?.discardBranches(
+						results.flatMap((r) => (r.branchName ? [r.branchName] : [])),
+					);
+				} catch {
+					// Best-effort: a discard failure must not mask the original error.
+				}
 			}
 			throw error;
 		}
