@@ -10,26 +10,54 @@ You have access to `legion_dispatch`, a tool that runs a task through multiple i
 
 ## When to use it
 
-Reach for `legion_dispatch` instead of solving directly (or instead of the native `task` tool) when a task genuinely benefits from more than one independent attempt:
-- A decision or judgment call where being wrong is costly and a second opinion would catch it (security review, a subtle correctness bug, an architecture choice).
-- A task where you'd naturally want to sanity-check your own answer against another take before committing to it.
-- Work you can decompose into a few independent pieces that don't need to share live context while running.
+Reach for `legion_dispatch` instead of doing a costly or risky task solo:
+- A decision or judgment call where being wrong is costly and a second opinion would help.
+- A subtle correctness, security, or architecture question.
+- Work that genuinely benefits from independent attempts.
+- When the task naturally decomposes into a few independent pieces.
+
+Prefer delegation when another agent can do a useful independent slice; do not
+spend a turn doing work an available task or Legion expert can do better.
 
 Do not use it for:
-- Simple, low-stakes tasks you can just do yourself — ensembling has real latency and token cost; only pay for it when the extra confidence is worth it.
-- Anything that needs the native `task` tool's live collaboration features (the calling session directing multiple subagents interactively) — use native `task` for that; `legion_dispatch` blocks until its governed pipeline returns one final synthesized result.
-- A task that is itself part of an active legion_dispatch job — experts dispatched by Legion must not call legion_dispatch themselves.
+- Simple, low-stakes tasks where the standard tools are enough.
+- Work that needs the native `task` tool's live collaboration features.
+- A task that is itself part of an active legion_dispatch job.
+
+## Dispatch concurrency and dependencies
+
+- A dispatched task or `legion_dispatch` result is a real dependency when the
+  next line of work relies on it. Wait for that specific result, poll a
+  background job when necessary, and incorporate it before continuing that
+  dependent line. Do not spawn a planner and then ignore its plan.
+- Unrelated inspection or implementation work may continue in parallel.
+- Native `task` calls may run concurrently with each other.
+- Native `task` and `legion_dispatch` are mutually exclusive while their tool
+  calls are pending; a pending call blocks the other dispatch mechanism.
+- Up to two `legion_dispatch` calls may run concurrently. Each can already fan
+  out to four expert worktrees, so two is the conservative eight-worktree cap.
+- The runtime guard enforces admission and emits a dependency reminder for
+  detached task results. It does not blanket-block unrelated tools.
 
 ## How it works
 
-1. Call `legion_dispatch` with `task` (the full task description). You can omit `tasks` and let Legion decompose it automatically, or supply an explicit `tasks` array yourself when you already know the natural split. When supplying explicit `tasks`, each task's own `assignment` is what the expert actually receives and acts on — `task` becomes secondary background, not any one expert's instruction. Don't front-load the real content (file contents, constraints, what to check) into `task` while leaving `assignment` a short label; put it in `assignment` directly.
-2. The call blocks the current turn until decomposition, expert execution, synthesis, and any human governance resolve, then returns the final synthesized result directly. Do not poll a job or continue other work while the pipeline is running.
-3. Internally, multiple experts (by default, several independent samples of your strongest configured model — not a blind spread across every model available) work the task in parallel, and a synthesis step reconciles their answers into one result.
-4. If the experts disagree too much, confidence is too low, or cost crosses a configured threshold, Legion escalates to a human decision (approve/reject/edit) before the final result is returned. The current turn remains blocked until that decision resolves.
+1. Call `legion_dispatch` with `task` (the full task description). You can omit
+   `tasks` for automatic decomposition, or supply explicit tasks when the split
+   is known. For explicit tasks, each task's `assignment` is the instruction
+   the expert acts on; `task` is shared background. Do not leave the real work
+   only in a thin assignment label.
+2. The call blocks until decomposition, expert execution, synthesis, and any
+   human governance resolve, then returns the synthesized result. Use that
+   result on any dependent work before proceeding.
+3. Multiple experts work in parallel and a synthesis stage reconciles them.
+4. If disagreement, confidence, or cost triggers escalation, the current turn
+   remains blocked until the human decision resolves.
 
 ## The one thing that matters most
 
-**Never call `legion_dispatch` from inside a task that was itself dispatched by `legion_dispatch`.** Experts are meant to give one independent, self-contained answer — recursive dispatch defeats the ensemble and can deadlock the job queue.
+**Never call `legion_dispatch` from inside a task that was itself dispatched by
+Legion.** Experts are independent; recursive dispatch can deadlock the queue.
+
 
 ## Meta-risk override: always dispatch for Legion-internal edits
 

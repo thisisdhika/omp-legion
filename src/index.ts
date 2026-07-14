@@ -4,6 +4,7 @@ import type { DispatchService } from "./application/dispatch-service";
 import { mergeLegionConfig } from "./domain/config";
 import type { AgentDefinition } from "./infrastructure/agent-loader";
 import { loadAgentDefinitions } from "./infrastructure/agent-loader";
+import { registerDispatchConcurrencyGuard } from "./infrastructure/dispatch-concurrency-guard";
 import { registerGitCommitGuard } from "./infrastructure/git-commit-guard";
 import { loadLegionConfig } from "./infrastructure/host-config";
 import { createHostDispatchService } from "./infrastructure/host-dispatch-service";
@@ -79,5 +80,6 @@ export default function legionExtension(api: ExtensionAPI): void {
 	registerIrcToolGuard(api);
 	registerGitCommitGuard(api);
 	registerLegionMetaRiskGuard(api);
+	registerDispatchConcurrencyGuard(api);
 	api.registerTool(createDispatchTool(() => service));
 }

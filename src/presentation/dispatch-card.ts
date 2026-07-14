@@ -281,25 +281,42 @@ export function renderDispatchResult(
 		const progressText = result.content?.[0];
 		// buildProgressText() already prefixes its own spinner glyph and
 		// trailing ellipsis; strip both since renderStatusLine draws its own
-		// (render-time-accurate) spinner via icon+spinnerFrame below — showing
-		// both would double up.
+		// (render-time-accurate) spinner via icon+spinnerFrame below.
 		const description =
 			progressText && progressText.type === "text"
 				? progressText.text.replace(/^\S+\s/, "").replace(/…$/, "")
 				: "Dispatching";
-		return framedBlock(theme, (width) => ({
-			header: renderStatusLine(
-				{
-					icon: "running" satisfies ToolUIStatus,
-					spinnerFrame: options.spinnerFrame,
-					title: "Legion",
-					description,
-				},
-				theme,
-			),
+		const liveDetails: LegionDispatchDetails = details ?? {
+			jobId: "",
+			recordId: "",
 			state: "running",
-			width,
-		}));
+			attemptCount: 0,
+			attemptModels: [],
+			taskBreakdown: [],
+		};
+		const buildTaskSection = taskSection(args, theme);
+		return framedBlock(theme, (width) => {
+			const sections: Section[] = [];
+			if (buildTaskSection) sections.push(buildTaskSection(width));
+			sections.push({
+				label: MIXTURES_SECTION_LABEL,
+				lines: renderTree(metadataNodes(args, liveDetails, theme)),
+			});
+			return {
+				header: renderStatusLine(
+					{
+						icon: "running" satisfies ToolUIStatus,
+						spinnerFrame: options.spinnerFrame,
+						title: "Legion",
+						description,
+					},
+					theme,
+				),
+				sections,
+				state: "running",
+				width,
+			};
+		});
 	}
 
 	if (details && details.state === "running") {
