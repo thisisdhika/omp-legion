@@ -7,6 +7,7 @@ import {
 	dispatchTaskSchema,
 	humanReadableJobId,
 	nextReplacement,
+	pascalCaseJobId,
 	resolveAgentName,
 	selectorKey,
 	shortAgentName,
@@ -691,6 +692,23 @@ describe("humanReadableJobId", () => {
 
 	test("falls back to a generic label for unlabelable text", () => {
 		expect(humanReadableJobId("!!! 一二三 !!!")).toBe("legion-dispatch");
+	});
+});
+describe("pascalCaseJobId", () => {
+	test("returns PascalCase with Legion prefix from task text", () => {
+		expect(pascalCaseJobId("review the complete implementation")).toBe(
+			"LegionReviewTheComplete",
+		);
+	});
+
+	test("caps at JOB_ID_MAX_WORDS (3) words", () => {
+		expect(pascalCaseJobId("add a comment at the top")).toBe(
+			"LegionAddAComment",
+		);
+	});
+
+	test("falls back to LegionDispatch for unlabelable text", () => {
+		expect(pascalCaseJobId("!!! 一二三 !!!")).toBe("LegionDispatch");
 	});
 });
 

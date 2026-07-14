@@ -33,7 +33,7 @@ import {
 	buildDispatchPlan,
 	classifyFailure,
 	dispatchRequestSchema,
-	humanReadableJobId,
+	pascalCaseJobId,
 	nextReplacement,
 	selectorKey,
 	shortAgentName,
@@ -53,7 +53,7 @@ let dispatchSequence = 0;
 
 function uniqueDispatchJobId(task: string): string {
 	dispatchSequence += 1;
-	return `${humanReadableJobId(task)}-${Date.now().toString(36)}-${dispatchSequence}`;
+	return `${pascalCaseJobId(task)}-${Date.now().toString(36)}-${dispatchSequence}`;
 }
 
 export interface ExpertExecution {
@@ -545,11 +545,12 @@ export class DispatchService {
 			request,
 			this.#options.defaultModel,
 			this.#options.isModelAvailable,
-			// e.g. "legion-review-the-change-coder-mimo-v2.5-free" — agent and
-			// model tell you *what's actually running*; the full job slug already
-			// made the id long before this part even started. A numeric suffix
-			// (e.g. "-2") is appended only on collision within the same plan
-			// (self-consistency sampling or diverse cycling through a small pool).
+			// e.g. "LegionReviewTheChange-mrkpc653-1-reviewer-deepseek-v4-pro" —
+			// agent and model tell you *what's actually running*; the PascalCase
+			// job slug already made the id long before this part even started. A
+			// numeric suffix (e.g. "-2") is appended only on collision within the
+			// same plan (self-consistency sampling or diverse cycling through a
+			// small pool).
 			(_index, _taskId, agent, model) =>
 				`${idPrefix}-${shortAgentName(agent)}-${shortModelName(model)}`,
 			this.#options.resolveAgent,

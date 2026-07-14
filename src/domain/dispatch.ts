@@ -100,6 +100,26 @@ export function humanReadableJobId(task: string): string {
 	const slug = words.join("-").toLowerCase().slice(0, JOB_ID_MAX_LENGTH);
 	return slug ? `legion-${slug}` : FALLBACK_JOB_ID;
 }
+/**
+ * Capitalizes each word and joins them (e.g. ["review", "the", "complete"] →
+ * "ReviewTheComplete"). Lowercases non-initial characters for clean PascalCase.
+ */
+function toPascalCase(words: string[]): string {
+	return words
+		.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+		.join("");
+}
+
+/**
+ * PascalCase variant of {@link humanReadableJobId} — used as the name segment
+ * of attempt IDs so they read cleanly in the HUD (e.g.
+ * "LegionReviewTheComplete-mrkpc653-1-reviewer-deepseek-v4-pro").
+ */
+export function pascalCaseJobId(task: string): string {
+	const words = task.match(/[a-zA-Z0-9]+/g)?.slice(0, JOB_ID_MAX_WORDS);
+	if (!words || words.length === 0) return "LegionDispatch";
+	return `Legion${toPascalCase(words)}`;
+}
 
 /** Strips the "legion-" persona prefix for compact ids — the surrounding id already reads as Legion's (it's prefixed with the job slug), so repeating "legion-" per attempt is just noise. Non-legion fallback agents (e.g. the host's "task") pass through unchanged. */
 export function shortAgentName(agent: string): string {
