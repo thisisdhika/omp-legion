@@ -19,6 +19,14 @@ Reach for `legion_dispatch` instead of doing a costly or risky task solo:
 Prefer delegation when another agent can do a useful independent slice; do not
 spend a turn doing work an available task or Legion expert can do better.
 
+Scale to the stakes, not to habit: a single-file mechanical fix rarely needs
+the ensemble; a decision that touches multiple files, an ambiguous tradeoff,
+or anything security/correctness-sensitive usually does. When genuinely
+unsure, the cost of an unneeded dispatch is lower than the cost of skipping
+one that mattered — but that cuts both ways, so don't default to dispatching
+every turn regardless of stakes; low-stakes work solo, on standard tools, is
+the correct call, not a shortcut.
+
 Do not use it for:
 - Simple, low-stakes tasks where the standard tools are enough.
 - Work that needs the native `task` tool's live collaboration features.
@@ -38,6 +46,19 @@ Do not use it for:
   out to four expert worktrees, so two is the conservative eight-worktree cap.
 - The runtime guard enforces admission and emits a dependency reminder for
   detached task results. It does not blanket-block unrelated tools.
+- Dispatched attempts default to an isolated git worktree (`worktree: true`
+  unless a role's config sets it `false`). Isolated worktrees still share this
+  repo's single `.git` object database and ref namespace with your own
+  working tree — concurrent git-mutating operations (commit, checkout,
+  branch, merge, rebase, or anything else that writes `.git/index` or moves a
+  ref) from both sides at once can race on that shared state — a clean lock
+  failure at best, stray branches or confusing repo state at worst, even
+  though each worktree has its own files. Do not batch
+  a git-mutating tool call alongside a `legion_dispatch` call in the same
+  turn unless every task in that dispatch is known to resolve to
+  `worktree: false`; when unsure, treat the dispatch as isolated. Read-only
+  inspection (read, grep, search, a non-mutating bash command) is always safe
+  to run concurrently regardless of worktree mode.
 
 ## How it works
 
