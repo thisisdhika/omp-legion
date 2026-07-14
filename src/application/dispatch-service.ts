@@ -822,7 +822,17 @@ export class DispatchService {
 					}
 				}
 			}
-			await this.#options.branchMerger?.mergeWinners(winners);
+			// When mergeWinners throws (e.g. branch conflict), leave ALL branches
+			// undiscarded so a human can inspect and promote an alternative — the
+			// branch-merger's own "Unmerged branches remain for manual resolution"
+			// contract. Setting branchesCleanedUp prevents the generic catch-block
+			// cleanup from discarding them.
+			try {
+				await this.#options.branchMerger?.mergeWinners(winners);
+			} catch (error) {
+				branchesCleanedUp = true;
+				throw error;
+			}
 			await this.#options.branchMerger?.discardBranches(loserBranches);
 			branchesCleanedUp = true;
 			this.#options.repository.complete(

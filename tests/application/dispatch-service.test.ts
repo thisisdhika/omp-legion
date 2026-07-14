@@ -1000,7 +1000,7 @@ describe("DispatchService", () => {
 			branchMerger.discarded.flat().every((name) => /\d$/.test(name)),
 		).toBe(true);
 	});
-	test("discards all branches when winner merge fails", async () => {
+	test("retains audit evidence and loser branches when winner merge fails", async () => {
 		const scheduler = new DeferredScheduler();
 		const branchMerger = new FailingMergeBranchMerger();
 		const repository = new RecordingRepository();
@@ -1024,15 +1024,16 @@ describe("DispatchService", () => {
 		if (!job) throw new Error("Expected a scheduled job.");
 		await expect(job(context())).rejects.toThrow("merge failed");
 
-		// The merge failure was caught by the catch-block cleanup, which
-		// discards every branch (winners and losers alike) so nothing
-		// dangles.
+		// The merge failure is handled at the mergeWinners call site: branches
+		// are deliberately left undiscarded so a human can inspect and promote
+		// an alternative — matching the branch-merger's "Unmerged branches
+		// remain for manual resolution" contract.
 		expect(repository.record?.state).toBe("failed");
 		expect(repository.record?.results).toHaveLength(2);
 		expect(repository.record?.syntheses).toHaveLength(1);
 		expect(repository.record?.governance).toHaveLength(1);
-		expect(branchMerger.events).toEqual(["merge:1", "discard:2"]);
-		expect(branchMerger.discarded.flat()).toHaveLength(2);
+		expect(branchMerger.events).toEqual(["merge:1"]);
+		expect(branchMerger.discarded).toHaveLength(0);
 	});
 
 	test("independently verifies every branched attempt and passes the result to synthesis", async () => {
