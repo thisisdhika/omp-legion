@@ -110,6 +110,23 @@ describe("evaluateLegionMetaRiskCommit", () => {
 			),
 		).toEqual({ block: true, reason: expect.any(String) });
 	});
+	test("blocks every dispatch-internal source path", () => {
+		for (const path of [
+			"src/infrastructure/dispatch-concurrency-guard.ts",
+			"src/infrastructure/host-dispatcher.ts",
+			"src/infrastructure/legion-meta-risk-guard.ts",
+			"src/infrastructure/agent-execution-context.ts",
+		]) {
+			expect(
+				evaluateLegionMetaRiskCommit(
+					primary,
+					"git commit -m change",
+					[path],
+					false,
+				).block,
+			).toBe(true);
+		}
+	});
 });
 
 describe("LEGION_META_RISK_PATHS consistency", () => {

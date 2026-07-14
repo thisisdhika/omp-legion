@@ -67,7 +67,7 @@ Regardless of diff size or apparent triviality, **always call `legion_dispatch` 
 - `src/domain/dispatch.ts` (the request/task schemas and their `.describe()` strings)
 - `rules/legion-*.md` (always-applied and rulebook rules bundled with Legion)
 - `agents/legion-*.md` (persona files for Legion expert roles)
-- Dispatch and rule-delivery infrastructure: `src/infrastructure/rule-loader.ts`, `src/infrastructure/host-dispatch-service.ts`, `src/application/dispatch-service.ts`, `src/domain/decomposition.ts`, `src/domain/synthesis.ts`
+- Dispatch and rule-delivery infrastructure: `src/infrastructure/rule-loader.ts`, `src/infrastructure/host-dispatch-service.ts`, `src/infrastructure/host-dispatcher.ts`, `src/infrastructure/dispatch-concurrency-guard.ts`, `src/infrastructure/legion-meta-risk-guard.ts`, `src/infrastructure/agent-execution-context.ts`, `src/application/dispatch-service.ts`, `src/domain/decomposition.ts`, `src/domain/synthesis.ts`
 
 If you are unsure whether a change falls in this category, dispatch anyway — the cost of an unnecessary review is far lower than the cost of a silent contract regression.
 
