@@ -149,7 +149,6 @@ export class HostExpertExecutor implements ExpertExecutor {
 			assignment: execution.attempt.assignment,
 			context: execution.task,
 			description: execution.attempt.description,
-			role: execution.attempt.role,
 			index: execution.attempt.index,
 			id: execution.attempt.id,
 			parentToolCallId: execution.parentToolCallId,
