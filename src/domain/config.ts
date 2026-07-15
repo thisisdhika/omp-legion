@@ -31,6 +31,7 @@ const roleModelInputSchema = z.object({
 		.optional(),
 	temperatureLadder: z.array(z.number().min(0).max(2)).min(1).optional(),
 	worktree: z.boolean().optional(),
+	maxSteps: z.number().int().positive().optional(),
 });
 /**
  * The decomposer always runs exactly one model at a time — it is an
@@ -201,6 +202,13 @@ export function mergeLegionConfig(input: unknown): LegionConfig {
 				// roleModelInputSchema not declaring the field, so every attempt
 				// kept running isolated regardless of the role's configured opt-out.
 				worktree: policy.worktree,
+				// Same class of bug as temperatureLadder/worktree above: maxSteps
+				// was added to roleModelPolicySchema (dispatch.ts) without also
+				// being added here and to roleModelInputSchema, so it was always
+				// stripped during config load — the step-limit guard's
+				// context.maxSteps was undefined for every real dispatch, live-
+				// confirmed by zero blocks firing despite maxSteps: 1 in config.yml.
+				maxSteps: policy.maxSteps,
 			},
 		]),
 	);
