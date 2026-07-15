@@ -1,13 +1,21 @@
 {
 	"name": "omp-legion",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "MoA-over-MoE orchestration with HOTL governance for Oh My Pi",
 	"type": "module",
 	"main": "src/index.ts",
-	"files": ["src/", "agents/", "rules/", "skills/"],
+	"files": ["src/", "agents/", "rules/", "skills/", "config.example.json"],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/thisisdhika/omp-legion.git"
+	},
+	"homepage": "https://github.com/thisisdhika/omp-legion#readme",
+	"bugs": {
+		"url": "https://github.com/thisisdhika/omp-legion/issues"
+	},
 	"omp": {
 		"name": "legion",
-		"version": "0.1.0",
+		"version": "1.0.0",
 		"description": "MoA-over-MoE orchestration with HOTL governance for Oh My Pi",
 		"extensions": ["src/index.ts"],
 		"settings": {
