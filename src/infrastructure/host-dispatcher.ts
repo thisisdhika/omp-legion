@@ -29,7 +29,10 @@ import type {
 	ReviveExpertParams,
 } from "../application/dispatch-service";
 import type { ExpertResult } from "../domain/dispatch";
-import { runAsDispatchedAgent } from "./agent-execution-context";
+import {
+	currentDispatchContext,
+	runAsDispatchedAgent,
+} from "./agent-execution-context";
 import type { Rule } from "./rule-loader";
 
 export interface HostExecutorOptions {
@@ -246,10 +249,26 @@ export class HostExpertExecutor implements ExpertExecutor {
 		// runs are parked without adopting — never resumable, since their
 		// worktree is merged and cleaned right after) — see
 		// runSubagentFollowUpTurn's doc comment in the vendored executor.
+		// Capture the final dispatch context state inside the run to check
+		// whether the attempt was truncated by its maxSteps limit. The context
+		// is only accessible via AsyncLocalStorage inside the fn scope.
+		let capturedTruncated: boolean | undefined;
 		if (execution.attempt.worktree === false) {
 			const result = await runAsDispatchedAgent(
 				execution.attempt.agent,
-				() => runSubprocess(baseOptions),
+				async () => {
+					const sub = await runSubprocess(baseOptions);
+					const ctx = currentDispatchContext();
+					if (
+						ctx &&
+						ctx.stepCount !== undefined &&
+						ctx.maxSteps !== undefined &&
+						ctx.stepCount >= ctx.maxSteps
+					) {
+						capturedTruncated = true;
+					}
+					return sub;
+				},
 				undefined,
 				execution.attempt.maxSteps,
 			);
@@ -269,6 +288,7 @@ export class HostExpertExecutor implements ExpertExecutor {
 				error: result.error,
 				aborted: result.aborted,
 				retryFailure: result.retryFailure,
+				truncatedByStepLimit: capturedTruncated,
 			};
 		}
 
@@ -295,9 +315,22 @@ export class HostExpertExecutor implements ExpertExecutor {
 			buildFailureResult: (err) => isolationFailureResult(execution, err),
 		};
 
+		let isolatedCapturedTruncated: boolean | undefined;
 		const result = await runAsDispatchedAgent(
 			execution.attempt.agent,
-			() => runIsolatedSubprocess(isolatedOptions),
+			async () => {
+				const sub = await runIsolatedSubprocess(isolatedOptions);
+				const ctx = currentDispatchContext();
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					isolatedCapturedTruncated = true;
+				}
+				return sub;
+			},
 			undefined,
 			execution.attempt.maxSteps,
 		);
@@ -320,6 +353,7 @@ export class HostExpertExecutor implements ExpertExecutor {
 			baseSha: result.branchBaseSha,
 			// ponytail: fixed #11 — preserve host's retryFailure signal
 			retryFailure: result.retryFailure,
+			truncatedByStepLimit: isolatedCapturedTruncated,
 		};
 	}
 

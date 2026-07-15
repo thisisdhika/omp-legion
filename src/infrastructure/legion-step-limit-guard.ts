@@ -15,11 +15,23 @@ const BLOCK_REASON =
 	"summary of the work completed and any remaining tasks.";
 
 /**
+ * The `yield` tool — exempted from blocking so the model can cleanly submit
+ * its (partial) result on the first attempt after tripping the guard, rather
+ * than bouncing off a blocked tool and getting caught in a host-nag loop.
+ */
+const YIELD_TOOL_NAME = "yield";
+
+/**
  * Increments the step counter on each tool_call and blocks further tool
  * access once the configured maxSteps is exceeded. Only acts on expert
  * attempts with a dispatch context where `senderKind === "expert"` and
  * `maxSteps` is set — primary/host/system calls and roles with no configured
  * limit are never touched.
+ *
+ * The `yield` tool is exempt from blocking: once the guard has tripped (whether
+ * via the pre-turn cap or the post-increment check), a `yield` call is let
+ * through so the expert can cleanly submit its result rather than oscillating
+ * between blocked-yield and host-nagged-for-a-tool-call.
  *
  * Uses a two-phase guard for defense-in-depth against same-turn parallel
  * tool call batches:
@@ -43,7 +55,7 @@ const BLOCK_REASON =
  * assistant turn.
  */
 export function registerLegionStepLimitGuard(api: ExtensionAPI): void {
-	api.on("tool_call", (_event) => {
+	api.on("tool_call", (event) => {
 		const context = currentDispatchContext();
 
 		// Only enforce limits for known expert attempts with a configured max.
@@ -56,6 +68,8 @@ export function registerLegionStepLimitGuard(api: ExtensionAPI): void {
 		// concurrent tool calls, the 2nd+ call in the same turn hits a hard stop
 		// rather than relying solely on microtask ordering of the increment.
 		if ((context.stepCount ?? 0) >= context.maxSteps) {
+			// yield is exempt — let it through so the expert can submit cleanly
+			if (event.toolName === YIELD_TOOL_NAME) return;
 			return { block: true, reason: BLOCK_REASON };
 		}
 
@@ -67,6 +81,8 @@ export function registerLegionStepLimitGuard(api: ExtensionAPI): void {
 		// Phase 2: post-increment check. Block if this increment pushed the
 		// counter over the limit (belt-and-suspenders with Phase 1 above).
 		if (context.stepCount > context.maxSteps) {
+			// yield is exempt — let it through so the expert can submit cleanly
+			if (event.toolName === YIELD_TOOL_NAME) return;
 			return { block: true, reason: BLOCK_REASON };
 		}
 

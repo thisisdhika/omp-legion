@@ -272,6 +272,15 @@ export interface ExpertResult {
 	 * (read-only roles, or a failed/aborted attempt).
 	 */
 	readonly verified?: boolean;
+	/**
+	 * True when the expert attempt was cut short by hitting its configured
+	 * `maxSteps` limit — the output is a partial result (the model's text-only
+	 * summary after being told to stop) rather than a complete, self-terminated
+	 * answer. Undefined/false for attempts that finished normally within budget.
+	 * Set by `HostExpertExecutor.run()` after the attempt completes, by
+	 * comparing the final `stepCount` against `maxSteps`.
+	 */
+	readonly truncatedByStepLimit?: boolean;
 	/** When this attempt was a runtime fallback or adaptive expansion replacement, the model selector it replaced. Absent for planned attempts. */
 	readonly replacedModel?: string;
 	/** Why this attempt was scheduled: a retryable-failure class (e.g. "quota/rate-limit") for fallback, or "adaptive expansion". Absent for planned attempts. */

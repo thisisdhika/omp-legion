@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/exten
 import {
 	type DispatchContext,
 	LEGION_DISPATCH_PARENT_ROUTE,
+	currentDispatchContext,
 	runAsDispatchedAgent,
 	runWithDispatchContext,
 } from "../../src/infrastructure/agent-execution-context";
@@ -417,5 +418,248 @@ describe("legion-step-limit-guard", () => {
 
 		// stepCount should remain at 3 (not incremented by blocked calls)
 		expect(context.stepCount).toBe(3);
+	});
+
+	test("yield is NOT blocked once tripped — other tools still blocked", () => {
+		const { handler } = captureHandler();
+		const expertContext: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-coder",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 1,
+		};
+		runWithDispatchContext(expertContext, async () => {
+			// First call (read) — allowed
+			expect(callHandler(handler, "read")).toBeUndefined();
+
+			// Second call (read) — blocked by guard
+			const blockedRead = callHandler(handler, "read");
+			expect(blockedRead?.block).toBe(true);
+			expect(blockedRead?.reason).toContain("step limit");
+
+			// yield call — NOT blocked even though guard is tripped
+			const yieldResult = callHandler(handler, "yield");
+			expect(yieldResult).toBeUndefined();
+
+			// Subsequent non-yield tool call still blocked
+			const blockedEdit = callHandler(handler, "edit");
+			expect(blockedEdit?.block).toBe(true);
+
+			const blockedBash = callHandler(handler, "bash");
+			expect(blockedBash?.block).toBe(true);
+		});
+	});
+
+	test("yield exemption works via both Phase 1 pre-turn cap and Phase 2 post-increment", () => {
+		const { handler } = captureHandler();
+
+		// Phase 1 pre-turn cap: context already at maxSteps from prior turn
+		const preCapContext: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-coder",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 2,
+			stepCount: 2, // Already exhausted
+		};
+		runWithDispatchContext(preCapContext, async () => {
+			// Phase 1 triggers (stepCount 2 >= maxSteps 2)
+			const blocked = callHandler(handler, "read");
+			expect(blocked?.block).toBe(true);
+
+			// yield still gets through
+			expect(callHandler(handler, "yield")).toBeUndefined();
+		});
+
+		// Phase 2 post-increment check: first call pushes over limit
+		const { handler: handler2 } = captureHandler();
+		const postIncContext: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-coder",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 1,
+		};
+		runWithDispatchContext(postIncContext, async () => {
+			// First call increments stepCount to 1, now 1 > 1 is false → allowed
+			expect(callHandler(handler2, "read")).toBeUndefined();
+
+			// Second call: Phase 1 blocks (1 >= 1), but yield exempted
+			const yieldResult = callHandler(handler2, "yield");
+			expect(yieldResult).toBeUndefined();
+
+			// Third call: still in Phase 1, non-yield blocked
+			const blocked = callHandler(handler2, "edit");
+			expect(blocked?.block).toBe(true);
+		});
+	});
+
+	test("yield is still counted toward step limit when it passes the guard", () => {
+		// yield should NOT bypass counting, only bypass blocking.
+		// With maxSteps=2: first read counts, yield counts (passes),
+		// then another read should be blocked by pre-turn cap.
+		const { handler } = captureHandler();
+		const expertContext: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-coder",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 2,
+		};
+		runWithDispatchContext(expertContext, async () => {
+			// Call 1 (read): stepCount 0→1, 1 > 2 = false → allowed
+			expect(callHandler(handler, "read")).toBeUndefined();
+			// Call 2 (yield): stepCount 1→2, 2 > 2 = false → allowed
+			expect(callHandler(handler, "yield")).toBeUndefined();
+			// Call 3 (read): stepCount 2≥2 pre-turn → blocked (yield not called)
+			const blocked = callHandler(handler, "read");
+			expect(blocked?.block).toBe(true);
+			// yield still works even now, guard is tripped
+			expect(callHandler(handler, "yield")).toBeUndefined();
+		});
+	});
+
+	/**
+	 * TEST: Capturing truncatedByStepLimit from inside the dispatch context.
+	 *
+	 * `HostExpertExecutor.run()` uses this exact pattern: after the attempt
+	 * function completes, it checks the context's stepCount and maxSteps.
+	 * This test validates that capture pattern works correctly for both
+	 * truncated and normal completions.
+	 */
+	test("captured truncatedByStepLimit is true when stepCount >= maxSteps, undefined otherwise", async () => {
+		let truncated: boolean | undefined;
+		await runAsDispatchedAgent(
+			"legion-coder",
+			async () => {
+				const ctx = currentDispatchContext();
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					truncated = true;
+				}
+				return 42;
+			},
+			undefined,
+			3, // maxSteps = 3
+		);
+		// Without exhausting the budget, truncated should be undefined
+		expect(truncated).toBeUndefined();
+
+		// Now run again but exhaust the budget
+		let truncated2: boolean | undefined;
+		await runAsDispatchedAgent(
+			"legion-coder",
+			async () => {
+				const ctx = currentDispatchContext();
+				if (ctx) ctx.stepCount = ctx.maxSteps ?? 0;
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					truncated2 = true;
+				}
+				return 42;
+			},
+			undefined,
+			3,
+		);
+		expect(truncated2).toBe(true);
+	});
+
+	test("truncatedByStepLimit capture: normal completion leaves field undefined, exhaustion sets it", async () => {
+		// Normal completion: stepCount within budget
+		let normalCapture: boolean | undefined;
+		await runAsDispatchedAgent(
+			"legion-scout",
+			async () => {
+				const ctx = currentDispatchContext();
+				if (ctx) ctx.stepCount = 2;
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					normalCapture = true;
+				}
+				return "ok";
+			},
+			undefined,
+			5,
+		);
+		expect(normalCapture).toBeUndefined();
+
+		// Exhausted completion: stepCount at maxSteps
+		let exhaustedCapture: boolean | undefined;
+		await runAsDispatchedAgent(
+			"legion-scout",
+			async () => {
+				const ctx = currentDispatchContext();
+				if (ctx) ctx.stepCount = 5;
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					exhaustedCapture = true;
+				}
+				return "ok";
+			},
+			undefined,
+			5,
+		);
+		expect(exhaustedCapture).toBe(true);
+
+		// Exceeded: past maxSteps
+		let exceededCapture: boolean | undefined;
+		await runAsDispatchedAgent(
+			"legion-scout",
+			async () => {
+				const ctx = currentDispatchContext();
+				if (ctx) ctx.stepCount = 7;
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					exceededCapture = true;
+				}
+				return "ok";
+			},
+			undefined,
+			5,
+		);
+		expect(exceededCapture).toBe(true);
+	});
+
+	test("truncatedByStepLimit is undefined when maxSteps is not set", async () => {
+		let capture: boolean | undefined;
+		await runAsDispatchedAgent(
+			"legion-scout",
+			async () => {
+				const ctx = currentDispatchContext();
+				if (ctx) ctx.stepCount = 999;
+				if (
+					ctx &&
+					ctx.stepCount !== undefined &&
+					ctx.maxSteps !== undefined &&
+					ctx.stepCount >= ctx.maxSteps
+				) {
+					capture = true;
+				}
+				return "ok";
+			},
+			// no maxSteps — context won't set stepCount
+		);
+		expect(capture).toBeUndefined();
 	});
 });
