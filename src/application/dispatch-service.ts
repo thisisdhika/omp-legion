@@ -76,6 +76,11 @@ export interface ReviveExpertParams {
 	/** Sent as the follow-up turn's prompt — typically the human's HOTL edit note. */
 	readonly message: string;
 	readonly signal: AbortSignal;
+	/**
+	 * The original attempt's configured max tool-call steps, replayed for
+	 * the revived session's step-limit guard. Undefined means unlimited.
+	 */
+	readonly maxSteps?: number;
 }
 
 export interface ExpertExecutor {
@@ -1308,6 +1313,7 @@ export class DispatchService {
 			strategy,
 			temperatureLadder,
 			worktree: template?.worktree,
+			maxSteps: template?.maxSteps,
 		};
 	}
 
@@ -1357,6 +1363,7 @@ export class DispatchService {
 						result,
 						message,
 						signal,
+						maxSteps: template?.maxSteps,
 					});
 				} catch {
 					return result;

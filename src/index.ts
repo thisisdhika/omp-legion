@@ -10,6 +10,7 @@ import { loadLegionConfig } from "./infrastructure/host-config";
 import { createHostDispatchService } from "./infrastructure/host-dispatch-service";
 import { registerIrcToolGuard } from "./infrastructure/irc-tool-guard";
 import { registerLegionMetaRiskGuard } from "./infrastructure/legion-meta-risk-guard";
+import { registerLegionStepLimitGuard } from "./infrastructure/legion-step-limit-guard";
 import { loadSubagentRules } from "./infrastructure/rule-loader";
 import { registerTaskToolGuard } from "./infrastructure/task-tool-guard";
 import { createDispatchTool } from "./presentation/dispatch-tool";
@@ -80,6 +81,7 @@ export default function legionExtension(api: ExtensionAPI): void {
 	registerIrcToolGuard(api);
 	registerGitCommitGuard(api);
 	registerLegionMetaRiskGuard(api);
+	registerLegionStepLimitGuard(api);
 	registerDispatchConcurrencyGuard(api);
 	api.registerTool(createDispatchTool(() => service));
 }

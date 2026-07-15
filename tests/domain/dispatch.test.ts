@@ -695,6 +695,144 @@ describe("dispatch planning", () => {
 	});
 });
 
+describe("roleModelPolicySchema maxSteps", () => {
+	test("accepts a positive integer for maxSteps", () => {
+		const policy = dispatchRequestSchema.parse({
+			task: "Test",
+			tasks: [{ id: "t1", role: "coder", assignment: "Code" }],
+			modelMap: {
+				coder: {
+					models: ["frontier"],
+					maxSteps: 15,
+					ensembleSize: 1,
+				},
+			},
+		});
+		expect(policy.modelMap.coder?.maxSteps).toBe(15);
+	});
+
+	test("accepts maxSteps: undefined when omitted", () => {
+		const policy = dispatchRequestSchema.parse({
+			task: "Test",
+			tasks: [{ id: "t1", role: "reviewer", assignment: "Review" }],
+			modelMap: {
+				reviewer: {
+					models: ["frontier"],
+					ensembleSize: 1,
+				},
+			},
+		});
+		expect(policy.modelMap.reviewer?.maxSteps).toBeUndefined();
+	});
+
+	test("rejects maxSteps: 0", () => {
+		expect(() =>
+			dispatchRequestSchema.parse({
+				task: "Test",
+				tasks: [{ id: "t1", role: "coder", assignment: "Code" }],
+				modelMap: {
+					coder: {
+						models: ["frontier"],
+						maxSteps: 0,
+						ensembleSize: 1,
+					},
+				},
+			}),
+		).toThrow();
+	});
+
+	test("rejects negative maxSteps", () => {
+		expect(() =>
+			dispatchRequestSchema.parse({
+				task: "Test",
+				tasks: [{ id: "t1", role: "coder", assignment: "Code" }],
+				modelMap: {
+					coder: {
+						models: ["frontier"],
+						maxSteps: -1,
+						ensembleSize: 1,
+					},
+				},
+			}),
+		).toThrow();
+	});
+
+	test("rejects non-integer maxSteps", () => {
+		expect(() =>
+			dispatchRequestSchema.parse({
+				task: "Test",
+				tasks: [{ id: "t1", role: "coder", assignment: "Code" }],
+				modelMap: {
+					coder: {
+						models: ["frontier"],
+						maxSteps: 3.5,
+						ensembleSize: 1,
+					},
+				},
+			}),
+		).toThrow();
+	});
+
+	test("threads maxSteps through buildDispatchPlan onto every attempt for that role", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Implement the change",
+			tasks: [
+				{
+					id: "code",
+					role: "coder",
+					assignment: "Implement it",
+				},
+			],
+			modelMap: {
+				coder: {
+					models: ["frontier", "fallback"],
+					strategy: "diverse",
+					ensembleSize: 2,
+					maxSteps: 10,
+				},
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts.every((attempt) => attempt.maxSteps === 10)).toBe(
+			true,
+		);
+	});
+
+	test("leaves maxSteps undefined on attempts when the role's policy doesn't set it", () => {
+		const request = dispatchRequestSchema.parse({
+			task: "Review the change",
+			tasks: [
+				{
+					id: "review",
+					role: "reviewer",
+					assignment: "Review it",
+				},
+			],
+			modelMap: {
+				reviewer: { models: ["frontier"], ensembleSize: 1 },
+			},
+		});
+
+		const plan = buildDispatchPlan(
+			request,
+			undefined,
+			() => true,
+			(index) => `attempt-${index}`,
+			(role) => role,
+		);
+
+		expect(plan.attempts[0]?.maxSteps).toBeUndefined();
+	});
+});
+
 describe("resolveAgentName", () => {
 	// Agent is never trusted from the decomposer or caller (both invented
 	// unresolvable host agent names in practice) — it is always looked up

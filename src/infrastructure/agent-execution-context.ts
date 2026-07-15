@@ -30,6 +30,17 @@ export interface DispatchContext {
 	 */
 	allowedDestination: string;
 	senderKind: SenderKind;
+	/**
+	 * Mutable step counter for this attempt, incremented by
+	 * legion-step-limit-guard.ts on every tool_call. Only meaningful when
+	 * `maxSteps` is set. Undefined when no step tracking has started.
+	 */
+	stepCount?: number;
+	/**
+	 * This attempt's configured max tool-call steps, if the role has one
+	 * set (`config.legion.modelMap.<role>.maxSteps`). Undefined = no limit.
+	 */
+	maxSteps?: number;
 }
 
 /**
@@ -102,6 +113,7 @@ function getStore(): AsyncLocalStorage<DispatchContext> {
 function contextForAgent(
 	agentName: string,
 	parentRoute = LEGION_DISPATCH_PARENT_ROUTE,
+	maxSteps?: number,
 ): DispatchContext {
 	if (agentName.startsWith(LEGION_AGENT_PREFIX)) {
 		return {
@@ -109,6 +121,8 @@ function contextForAgent(
 			agentName,
 			parentRoute,
 			allowedDestination: parentRoute,
+			maxSteps,
+			stepCount: maxSteps !== undefined ? 0 : undefined,
 		};
 	}
 	return {
@@ -129,12 +143,13 @@ export function runAsDispatchedAgent<T>(
 	agentName: string,
 	fn: () => Promise<T>,
 	parentRoute?: string,
+	maxSteps?: number,
 ): Promise<T> {
 	// Supplementary signal only, kept for any external code that inspects the
 	// environment directly; the actual fix for the module-cache split is the
 	// globalThis-anchored store above (see getStore()).
 	process.env.LEGION_ISOLATED = "1";
-	return getStore().run(contextForAgent(agentName, parentRoute), fn);
+	return getStore().run(contextForAgent(agentName, parentRoute, maxSteps), fn);
 }
 
 /** Wrap `fn` in an explicit dispatch context (tests + future callers). */

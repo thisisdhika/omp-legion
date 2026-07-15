@@ -247,8 +247,11 @@ export class HostExpertExecutor implements ExpertExecutor {
 		// worktree is merged and cleaned right after) — see
 		// runSubagentFollowUpTurn's doc comment in the vendored executor.
 		if (execution.attempt.worktree === false) {
-			const result = await runAsDispatchedAgent(execution.attempt.agent, () =>
-				runSubprocess(baseOptions),
+			const result = await runAsDispatchedAgent(
+				execution.attempt.agent,
+				() => runSubprocess(baseOptions),
+				undefined,
+				execution.attempt.maxSteps,
 			);
 			return {
 				attemptId: execution.attempt.id,
@@ -292,8 +295,11 @@ export class HostExpertExecutor implements ExpertExecutor {
 			buildFailureResult: (err) => isolationFailureResult(execution, err),
 		};
 
-		const result = await runAsDispatchedAgent(execution.attempt.agent, () =>
-			runIsolatedSubprocess(isolatedOptions),
+		const result = await runAsDispatchedAgent(
+			execution.attempt.agent,
+			() => runIsolatedSubprocess(isolatedOptions),
+			undefined,
+			execution.attempt.maxSteps,
 		);
 		return {
 			attemptId: execution.attempt.id,
@@ -330,18 +336,22 @@ export class HostExpertExecutor implements ExpertExecutor {
 	 * does not itself re-check that, the caller owns the invariant.
 	 */
 	async reviveExpert(params: ReviveExpertParams): Promise<ExpertResult> {
-		const { result, message, signal } = params;
+		const { result, message, signal, maxSteps } = params;
 		const agent = this.#options.agents.get(result.agent);
 		if (!agent) throw new Error(`Unknown host agent "${result.agent}".`);
-		const revived = await runAsDispatchedAgent(result.agent, () =>
-			runSubagentFollowUpTurn({
-				id: result.attemptId,
-				agent,
-				message,
-				signal,
-				eventBus: this.#options.eventBus,
-				maxRuntimeMs: this.#options.expertTimeoutMs,
-			}),
+		const revived = await runAsDispatchedAgent(
+			result.agent,
+			() =>
+				runSubagentFollowUpTurn({
+					id: result.attemptId,
+					agent,
+					message,
+					signal,
+					eventBus: this.#options.eventBus,
+					maxRuntimeMs: this.#options.expertTimeoutMs,
+				}),
+			undefined,
+			maxSteps,
 		);
 		return {
 			attemptId: result.attemptId,

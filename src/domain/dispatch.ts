@@ -46,6 +46,18 @@ export const roleModelPolicySchema = z.object({
 	 * working tree instead of an isolated one.
 	 */
 	worktree: z.boolean().optional(),
+	/**
+	 * Caps the number of tool-call steps this role's expert attempts can
+	 * perform before being forced to respond with text only (a runaway-loop /
+	 * cost safeguard). Only meaningful for legion-* expert personas — a
+	 * non-expert dispatch or a role with no configured limit is never touched.
+	 * Undefined means unlimited (unchanged behavior when omitted). A value of
+	 * 0 is intentionally rejected by the schema (it makes no sense: an expert
+	 * with maxSteps=0 can never make any tool call at all, not even to
+	 * respond, which defeats the purpose of producing usable partial results
+	 * instead of erroring out — see legion-step-limit-guard.ts).
+	 */
+	maxSteps: z.number().int().positive().optional(),
 });
 
 export const dispatchTaskSchema = z.object({
@@ -185,6 +197,13 @@ export interface DispatchAttempt {
 	readonly temperatureLadder?: readonly number[];
 	/** This role's `worktree` policy (see roleModelPolicySchema). Undefined means true — isolated by default. */
 	readonly worktree?: boolean;
+	/**
+	 * This role's configured max tool-call steps per expert attempt (see
+	 * roleModelPolicySchema.maxSteps). Undefined means unlimited — the guard
+	 * never acts. The executor threads this into `runAsDispatchedAgent` so the
+	 * per-attempt `DispatchContext` carries it for the step-limit guard.
+	 */
+	readonly maxSteps?: number;
 }
 
 export interface DispatchPlan {
@@ -669,6 +688,7 @@ export function buildDispatchPlan(
 				strategy: selection.strategy,
 				temperatureLadder: policy?.temperatureLadder,
 				worktree: policy?.worktree,
+				maxSteps: policy?.maxSteps,
 			});
 			attemptIndex += 1;
 		}
