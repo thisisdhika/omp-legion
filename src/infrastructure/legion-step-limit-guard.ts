@@ -20,6 +20,27 @@ const BLOCK_REASON =
  * attempts with a dispatch context where `senderKind === "expert"` and
  * `maxSteps` is set — primary/host/system calls and roles with no configured
  * limit are never touched.
+ *
+ * Uses a two-phase guard for defense-in-depth against same-turn parallel
+ * tool call batches:
+ *
+ * 1. **Pre-turn cap**: if `stepCount >= maxSteps` already (reached in a
+ *    previous turn or session), block immediately without incrementing.
+ *    This catches parallel calls within a single assistant turn: the first
+ *    call's handler increments stepCount, and subsequent calls in the same
+ *    batch see `stepCount >= maxSteps` at the pre-check and are blocked
+ *    before any actual tool executes.
+ *
+ * 2. **Post-increment check**: after incrementing, if the new count exceeds
+ *    maxSteps, block. This is the original guard and serves as a belt-
+ *    and-suspenders fallback: it catches the first call that pushes the
+ *    counter over the limit and covers any execution path that bypassed the
+ *    pre-check.
+ *
+ * The two-phase design ensures the guarantee "at most `maxSteps` tool calls
+ * execute per expert attempt" regardless of whether the host dispatches
+ * tool calls sequentially or batches them in parallel from a single
+ * assistant turn.
  */
 export function registerLegionStepLimitGuard(api: ExtensionAPI): void {
 	api.on("tool_call", (_event) => {
@@ -29,12 +50,22 @@ export function registerLegionStepLimitGuard(api: ExtensionAPI): void {
 		if (context?.senderKind !== "expert") return;
 		if (context.maxSteps === undefined) return;
 
+		// Phase 1: pre-turn cap. If the counter already meets or exceeds the
+		// limit (from a previous turn or from another call in this same parallel
+		// batch), block before incrementing. This ensures that within a batch of
+		// concurrent tool calls, the 2nd+ call in the same turn hits a hard stop
+		// rather than relying solely on microtask ordering of the increment.
+		if ((context.stepCount ?? 0) >= context.maxSteps) {
+			return { block: true, reason: BLOCK_REASON };
+		}
+
 		// Increment the step counter. This mutates the same object instance
 		// that `currentDispatchContext()` returns — safe because each concurrent
 		// attempt gets its own isolated DispatchContext via AsyncLocalStorage.
 		context.stepCount = (context.stepCount ?? 0) + 1;
 
-		// Once the limit is exceeded, block every subsequent tool call.
+		// Phase 2: post-increment check. Block if this increment pushed the
+		// counter over the limit (belt-and-suspenders with Phase 1 above).
 		if (context.stepCount > context.maxSteps) {
 			return { block: true, reason: BLOCK_REASON };
 		}

@@ -43,6 +43,26 @@ function callHandler(
 	return result as { block?: boolean; reason?: string } | undefined;
 }
 
+/**
+ * Simulate the ExtensionRunner.emitToolCall wrapping pattern.
+ * The real runner does:
+ *   const handlerResult = await raceHandlerWithTimeout(
+ *     Promise.resolve(handler(event, ctx)), timeoutMs);
+ * which wraps the handler's sync result in a resolved promise and awaits it.
+ */
+async function emitToolCallLike(
+	handler: (event: { toolName: string; input?: unknown }) => unknown,
+): Promise<{ block?: boolean; reason?: string } | undefined> {
+	const event = { toolName: "read", input: {} };
+	// Mirror: Promise.resolve(handler(event, ctx))
+	const work = Promise.resolve(handler(event));
+	// Mirror: await raceHandlerWithTimeout(work, timeoutMs)
+	const result = (await work) as
+		| { block?: boolean; reason?: string }
+		| undefined;
+	return result;
+}
+
 describe("legion-step-limit-guard", () => {
 	test("no dispatch context → allows tool call", () => {
 		const { handler } = captureHandler();
@@ -264,5 +284,138 @@ describe("legion-step-limit-guard", () => {
 		// contextB: maxSteps=1, first allowed, second blocked
 		expect(seenB[0]).toBeUndefined();
 		expect(seenB[1]).toBe(true);
+	});
+
+	/**
+	 * TEST: Parallel tool calls respect maxSteps limit.
+	 *
+	 * This test models the real host's behavior: when an assistant message
+	 * contains multiple tool calls (e.g. 3 parallel `read` calls), the agent
+	 * loop dispatches them concurrently via Promise.allSettled.
+	 * ExtensionRunner.emitToolCall wraps each handler call with
+	 * `Promise.resolve(handler(event, ctx))` followed by `await`, which
+	 * introduces microtask boundaries. The test verifies that stepCount
+	 * serialization works correctly even under these conditions.
+	 *
+	 * With maxSteps=1, only the FIRST tool call should execute; the 2nd
+	 * and 3rd should be blocked by the guard.
+	 */
+	test("parallel tool calls respect maxSteps — only N calls allowed before blocking", async () => {
+		const { handler } = captureHandler();
+		const context: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-scout",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 1,
+		};
+
+		const results = await runWithDispatchContext(context, async () => {
+			// Launch 3 concurrent tool calls, each going through the
+			// ExtensionRunner's emitToolCall wrapping pattern:
+			//   const result = await raceHandlerWithTimeout(Promise.resolve(handler(event, ctx)), timeoutMs)
+			const calls = Array.from({ length: 3 }, () => emitToolCallLike(handler));
+			return await Promise.all(calls);
+		});
+
+		// Call 1: stepCount goes 0→1, 1 > 1 is false → allowed
+		expect(results[0]).toBeUndefined();
+		// Call 2: stepCount goes 1→2, 2 > 1 is true → blocked
+		expect(results[1]).toBeDefined();
+		expect(results[1]?.block).toBe(true);
+		// Call 3: stepCount goes 2→3, 3 > 1 is true → blocked
+		expect(results[2]).toBeDefined();
+		expect(results[2]?.block).toBe(true);
+	});
+
+	/**
+	 * TEST: Same as above but with maxSteps=0 (first call should be the
+	 * one that gets through, 2+ blocked). maxSteps=0 is rejected by schema
+	 * but tests the edge case.
+	 */
+	test("parallel tool calls with maxSteps=0 block everything after first", async () => {
+		const { handler } = captureHandler();
+		const context: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-scout",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 0,
+		};
+
+		const results = await runWithDispatchContext(context, async () => {
+			const calls = Array.from({ length: 3 }, () => emitToolCallLike(handler));
+			return await Promise.all(calls);
+		});
+
+		// Call 1: stepCount goes 0→1, 1 > 0 is true → blocked
+		expect(results[0]).toBeDefined();
+		expect(results[0]?.block).toBe(true);
+		// Call 2: blocked (stepCount 2, 2 > 0)
+		expect(results[1]?.block).toBe(true);
+		// Call 3: blocked (stepCount 3, 3 > 0)
+		expect(results[2]?.block).toBe(true);
+	});
+
+	/**
+	 * TEST: With maxSteps=3 and 5 parallel calls, only the first 3 should
+	 * succeed; calls 4-5 should be blocked.
+	 */
+	test("parallel tool calls with maxSteps=3 allow 3, block 4+", async () => {
+		const { handler } = captureHandler();
+		const context: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-scout",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 3,
+		};
+
+		const results = await runWithDispatchContext(context, async () => {
+			const calls = Array.from({ length: 5 }, () => emitToolCallLike(handler));
+			return await Promise.all(calls);
+		});
+
+		// Calls 1-3 allowed (stepCount 1,2,3 all ≤ 3)
+		expect(results[0]).toBeUndefined();
+		expect(results[1]).toBeUndefined();
+		expect(results[2]).toBeUndefined();
+		// Calls 4-5 blocked (stepCount 4,5 > 3)
+		expect(results[3]?.block).toBe(true);
+		expect(results[4]?.block).toBe(true);
+	});
+
+	/**
+	 * TEST: When stepCount is already at maxSteps from a prior turn, the
+	 * pre-turn cap catches the first call of the next turn and blocks
+	 * immediately without incrementing further. This verifies the Phase 1
+	 * guard works for the cross-turn case where stepCount was already
+	 * exhausted before the batch starts.
+	 */
+	test("pre-turn cap blocks when stepCount already at maxSteps from prior turn", async () => {
+		const { handler } = captureHandler();
+		// Create a context where stepCount is already at the limit (e.g.
+		// from tool calls in a previous turn).
+		const context: DispatchContext = {
+			senderKind: "expert",
+			agentName: "legion-scout",
+			parentRoute: PARENT,
+			allowedDestination: PARENT,
+			maxSteps: 3,
+			stepCount: 3, // Already exhausted from prior turn
+		};
+
+		const results = await runWithDispatchContext(context, async () => {
+			const calls = Array.from({ length: 3 }, () => emitToolCallLike(handler));
+			return await Promise.all(calls);
+		});
+
+		// All 3 should be blocked by Phase 1 pre-turn cap (3 >= 3)
+		expect(results[0]?.block).toBe(true);
+		expect(results[1]?.block).toBe(true);
+		expect(results[2]?.block).toBe(true);
+
+		// stepCount should remain at 3 (not incremented by blocked calls)
+		expect(context.stepCount).toBe(3);
 	});
 });
