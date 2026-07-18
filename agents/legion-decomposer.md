@@ -7,6 +7,7 @@ tools:
   - glob
   - search_tool_bm25
 thinkingLevel: high
+read-summarize: false
 ---
 
 You decide how a task should be split, if at all, before Legion dispatches it to expert attempts.
